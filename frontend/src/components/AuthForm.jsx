@@ -15,6 +15,9 @@ export default function AuthForm({ onAuth }) {
   const [displayName, setDisplayName] = useState('')
   const [error, setError] = useState(/** @type {string | null} */ (null))
   const [loading, setLoading] = useState(false)
+  // True after a successful sign-up when email confirmation is required.
+  // Derived from server response, not a separate effect (rerender-derived-state-no-effect).
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
 
   // Label is derived from `mode` during render — no effect or extra state
   // needed (rerender-derived-state-no-effect).
@@ -34,19 +37,20 @@ export default function AuthForm({ onAuth }) {
         const { data, error: authError } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { display_name: displayName } },
+          options: { data: { display_name: displayName || email } },
         })
         if (authError) throw authError
 
-        // After sign-up, insert the public profile row.
-        // The auth user is created first; the profile row references it.
-        if (data.user) {
-          const { error: profileError } = await supabase
-            .from('users')
-            .insert({ id: data.user.id, email, display_name: displayName || email })
-          // A conflict here means the profile already exists (e.g. re-run seed).
-          // We only surface genuine errors.
-          if (profileError && profileError.code !== '23505') throw profileError
+        // The database trigger (handle_new_user) creates the public.users
+        // profile row automatically — no client-side insert needed.
+        //
+        // When email confirmation is enabled (production), data.session is
+        // null until the user clicks the confirmation link. Detect this and
+        // show a message instead of redirecting (rerender-derived-state-no-effect:
+        // derive the confirmation state from the response, not extra state).
+        if (data.session === null) {
+          setAwaitingConfirmation(true)
+          return
         }
       } else {
         const { error: authError } = await supabase.auth.signInWithPassword({
@@ -73,66 +77,85 @@ export default function AuthForm({ onAuth }) {
     <div className="auth-container">
       <div className="auth-card">
         <h1 className="auth-title">Notes</h1>
-        <p className="auth-subtitle">{isSignUp ? 'Create your account' : 'Welcome back'}</p>
 
-        <form onSubmit={handleSubmit} className="auth-form">
-          {/* Display name field only shown for sign-up (ternary, not &&,
-              because the field value is a string — rendering-conditional-render) */}
-          {isSignUp ? (
-            <div className="field">
-              <label htmlFor="display-name">Name</label>
-              <input
-                id="display-name"
-                type="text"
-                autoComplete="name"
-                placeholder="Your name"
-                value={displayName}
-                onChange={e => setDisplayName(e.target.value)}
-              />
-            </div>
-          ) : null}
+        {/* Ternary: awaitingConfirmation is boolean so && would be safe, but
+            ternary is used consistently for all conditional views in this file
+            (rendering-conditional-render). */}
+        {awaitingConfirmation ? (
+          <>
+            <p className="auth-subtitle">Check your email</p>
+            <p className="auth-confirm-message">
+              We sent a confirmation link to <strong>{email}</strong>.
+              Click it to activate your account and sign in.
+            </p>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => { setAwaitingConfirmation(false); setMode('signin') }}
+            >
+              Back to sign in
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="auth-subtitle">{isSignUp ? 'Create your account' : 'Welcome back'}</p>
 
-          <div className="field">
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              required
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-            />
-          </div>
+            <form onSubmit={handleSubmit} className="auth-form">
+              {isSignUp ? (
+                <div className="field">
+                  <label htmlFor="display-name">Name</label>
+                  <input
+                    id="display-name"
+                    type="text"
+                    autoComplete="name"
+                    placeholder="Your name"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                  />
+                </div>
+              ) : null}
 
-          <div className="field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              autoComplete={isSignUp ? 'new-password' : 'current-password'}
-              placeholder="••••••••"
-              required
-              minLength={6}
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-            />
-          </div>
+              <div className="field">
+                <label htmlFor="email">Email</label>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                />
+              </div>
 
-          {/* Error is a string or null — ternary prevents rendering "null" text
-              (rendering-conditional-render) */}
-          {error !== null ? (
-            <p className="auth-error" role="alert">{error}</p>
-          ) : null}
+              <div className="field">
+                <label htmlFor="password">Password</label>
+                <input
+                  id="password"
+                  type="password"
+                  autoComplete={isSignUp ? 'new-password' : 'current-password'}
+                  placeholder="••••••••"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                />
+              </div>
 
-          <button type="submit" className="btn btn-primary" disabled={loading}>
-            {loading ? 'Please wait…' : submitLabel}
-          </button>
-        </form>
+              {error !== null ? (
+                <p className="auth-error" role="alert">{error}</p>
+              ) : null}
 
-        <button type="button" className="btn btn-ghost" onClick={toggleMode}>
-          {toggleLabel}
-        </button>
+              <button type="submit" className="btn btn-primary" disabled={loading}>
+                {loading ? 'Please wait…' : submitLabel}
+              </button>
+            </form>
+
+            <button type="button" className="btn btn-ghost" onClick={toggleMode}>
+              {toggleLabel}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

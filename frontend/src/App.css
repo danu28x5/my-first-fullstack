@@ -61,6 +61,13 @@
   border-radius: 6px;
 }
 
+.auth-confirm-message {
+  font-size: 0.9rem;
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0 0 1.5rem;
+}
+
 /* ============================================================
    Form fields (shared across auth + editor)
    ============================================================ */
