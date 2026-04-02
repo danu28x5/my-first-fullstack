@@ -32,42 +32,58 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   )
   const [displayName, setDisplayName] = useState(/** @type {string | null} */ (null))
   const [profileEditorOpen, setProfileEditorOpen] = useState(false)
+  const [showArchive, setShowArchive] = useState(false)
 
-  // ── Fetch ────────────────────────────────────────────────────────────────
+  // ── Fetch: profile (once on mount) ────────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false
-
-    async function fetchData() {
-      // Fire both requests in parallel — they are independent (async-parallel).
-      const [notesResult, profileResult] = await Promise.all([
-        supabase
-          .from('notes')
-          .select('*')
-          .order('is_pinned', { ascending: false })
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('users')
-          .select('display_name')
-          .eq('id', userId)
-          .single(),
-      ])
-
-      if (cancelled) return
-      if (notesResult.error) {
-        setFetchError(notesResult.error.message)
-      } else {
-        setNotes(notesResult.data ?? [])
-      }
-      setLoadingNotes(false)
-      if (!profileResult.error) {
-        setDisplayName(profileResult.data?.display_name ?? null)
-      }
-    }
-
-    fetchData()
+    supabase
+      .from('users')
+      .select('display_name')
+      .eq('id', userId)
+      .single()
+      .then(({ data, error }) => {
+        if (cancelled || error) return
+        setDisplayName(data?.display_name ?? null)
+      })
     return () => { cancelled = true }
   }, [])
+
+  // ── Fetch: notes (re-runs when active/archive view toggles) ─────────────────
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingNotes(true)
+    setFetchError(null)
+
+    async function fetchNotes() {
+      const query = showArchive
+        ? supabase
+            .from('notes')
+            .select('*')
+            .not('archived_at', 'is', null)
+            .order('archived_at', { ascending: false })
+        : supabase
+            .from('notes')
+            .select('*')
+            .is('archived_at', null)
+            .order('is_pinned', { ascending: false })
+            .order('created_at', { ascending: false })
+
+      const { data, error } = await query
+      if (cancelled) return
+      if (error) {
+        setFetchError(error.message)
+      } else {
+        setNotes(data ?? [])
+      }
+      setLoadingNotes(false)
+    }
+
+    fetchNotes()
+    return () => { cancelled = true }
+  }, [showArchive])
 
   // ── Create ───────────────────────────────────────────────────────────────
 
@@ -145,14 +161,31 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     setProfileEditorOpen(false)
   }, [])
 
-  // ── Delete ───────────────────────────────────────────────────────────────
+  // ── Archive / Unarchive / Delete ──────────────────────────────────────────────────────
 
-  const handleDelete = useCallback(async (id) => {
+  const handleArchive = useCallback(async (id) => {
+    const { error } = await supabase
+      .from('notes')
+      .update({ archived_at: new Date().toISOString() })
+      .eq('id', id)
+    if (error) { alert(`Archive failed: ${error.message}`); return }
+    // Remove from active view immediately (rerender-functional-setstate).
+    setNotes(curr => curr.filter(n => n.id !== id))
+  }, [])
+
+  const handleUnarchive = useCallback(async (id) => {
+    const { error } = await supabase
+      .from('notes')
+      .update({ archived_at: null })
+      .eq('id', id)
+    if (error) { alert(`Unarchive failed: ${error.message}`); return }
+    // Remove from archive view immediately (rerender-functional-setstate).
+    setNotes(curr => curr.filter(n => n.id !== id))
+  }, [])
+
+  const handleDeletePermanently = useCallback(async (id) => {
     const { error } = await supabase.from('notes').delete().eq('id', id)
-    if (error) {
-      alert(`Delete failed: ${error.message}`)
-      return
-    }
+    if (error) { alert(`Delete failed: ${error.message}`); return }
     // Functional setState (rerender-functional-setstate).
     setNotes(curr => curr.filter(n => n.id !== id))
   }, [])
@@ -171,7 +204,22 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   return (
     <div className="notes-layout">
       <header className="notes-header">
-        <h1 className="notes-title">Notes</h1>
+        <div className="notes-tabs">
+          <button
+            type="button"
+            className={`btn notes-tab${!showArchive ? ' notes-tab--active' : ''}`}
+            onClick={() => setShowArchive(false)}
+          >
+            Notes
+          </button>
+          <button
+            type="button"
+            className={`btn notes-tab${showArchive ? ' notes-tab--active' : ''}`}
+            onClick={() => setShowArchive(true)}
+          >
+            Archived
+          </button>
+        </div>
         <div className="notes-header-actions">
           <span className="notes-user">{displayName ?? userEmail}</span>
           <button
@@ -189,13 +237,16 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           >
             {theme === 'light' ? '🌙' : '☀️'}
           </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => setEditingNote('new')}
-          >
-            + New note
-          </button>
+          {/* + New note hidden in archive view (rendering-conditional-render). */}
+          {!showArchive ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setEditingNote('new')}
+            >
+              + New note
+            </button>
+          ) : null}
           <button type="button" className="btn btn-ghost" onClick={onSignOut}>
             Sign out
           </button>
@@ -211,15 +262,20 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         ) : fetchError !== null ? (
           <p className="notes-status notes-error" role="alert">{fetchError}</p>
         ) : notes.length === 0 ? (
-          <p className="notes-status">No notes yet. Create your first one!</p>
+          <p className="notes-status">
+            {showArchive ? 'No archived notes.' : 'No notes yet. Create your first one!'}
+          </p>
         ) : (
           <div className="notes-grid">
             {notes.map(note => (
               <NoteCard
                 key={note.id}
                 note={note}
+                isArchiveView={showArchive}
                 onEdit={setEditingNote}
-                onDelete={handleDelete}
+                onArchive={handleArchive}
+                onUnarchive={handleUnarchive}
+                onDeletePermanently={handleDeletePermanently}
                 onTogglePin={handleTogglePin}
               />
             ))}

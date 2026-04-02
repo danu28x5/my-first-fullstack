@@ -209,6 +209,36 @@
   color: var(--accent);
 }
 
+/* Notes / Archived tab switcher in the header. */
+.notes-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.notes-tab {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  padding: 0.25rem 0.5rem;
+}
+
+.notes-tab:hover:not(:disabled) {
+  color: var(--text-h);
+  background: rgba(51, 138, 1, 0.06);
+}
+
+.notes-tab--active {
+  color: var(--accent);
+}
+
+.notes-tab--active:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent);
+}
+
 .notes-header-actions {
   display: flex;
   align-items: center;
@@ -305,12 +335,14 @@
 .note-card-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
 }
 
 .note-card-actions-end {
   display: flex;
   gap: 0.6rem;
+  /* margin-left: auto right-aligns the group whether or not the pin
+     button is present (active view has it, archive view does not). */
+  margin-left: auto;
 }
 
 .note-card-actions-end .btn {

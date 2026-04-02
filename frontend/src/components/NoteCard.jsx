@@ -3,9 +3,17 @@
 // avoids unnecessary remounts (rerender-no-inline-components).
 
 /**
- * @param {{ note: import('../lib/supabase').Note, onEdit: (note: import('../lib/supabase').Note) => void, onDelete: (id: number) => void, onTogglePin: (note: import('../lib/supabase').Note) => void }} props
+ * @param {{
+ *   note: import('../lib/supabase').Note,
+ *   isArchiveView: boolean,
+ *   onEdit: (note: import('../lib/supabase').Note) => void,
+ *   onArchive: (id: number) => void,
+ *   onUnarchive: (id: number) => void,
+ *   onDeletePermanently: (id: number) => void,
+ *   onTogglePin: (note: import('../lib/supabase').Note) => void
+ * }} props
  */
-export default function NoteCard({ note, onEdit, onDelete, onTogglePin }) {
+export default function NoteCard({ note, isArchiveView, onEdit, onArchive, onUnarchive, onDeletePermanently, onTogglePin }) {
   // Format date during render — derived value, no state needed
   // (rerender-derived-state-no-effect).
   const formattedDate = new Date(note.updated_at).toLocaleDateString(undefined, {
@@ -28,29 +36,55 @@ export default function NoteCard({ note, onEdit, onDelete, onTogglePin }) {
         </time>
       </div>
       <div className="note-card-actions">
-        <button
-          type="button"
-          className={`btn btn-ghost btn-pin${note.is_pinned ? ' btn-pin--active' : ''}`}
-          onClick={() => onTogglePin(note)}
-          aria-label={note.is_pinned ? 'Unpin note' : 'Pin note'}
-        >
-          📌
-        </button>
+        {/* Pin button only shown in active view (rendering-conditional-render). */}
+        {!isArchiveView ? (
+          <button
+            type="button"
+            className={`btn btn-ghost btn-pin${note.is_pinned ? ' btn-pin--active' : ''}`}
+            onClick={() => onTogglePin(note)}
+            aria-label={note.is_pinned ? 'Unpin note' : 'Pin note'}
+          >
+            📌
+          </button>
+        ) : null}
         <div className="note-card-actions-end">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => onEdit(note)}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
-            onClick={() => onDelete(note.id)}
-          >
-            Delete
-          </button>
+          {/* Archive view: Unarchive + Delete Permanently.
+              Active view: Edit + Archive (rendering-conditional-render). */}
+          {isArchiveView ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onUnarchive(note.id)}
+              >
+                Unarchive
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => onDeletePermanently(note.id)}
+              >
+                Delete
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onEdit(note)}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => onArchive(note.id)}
+              >
+                Archive
+              </button>
+            </>
+          )}
         </div>
       </div>
     </article>
