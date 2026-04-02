@@ -12,6 +12,20 @@ function App() {
   // This is the Supabase auth idiom; three distinct states from one value.
   const [session, setSession] = useState(undefined)
 
+  // Theme is initialised from localStorage via lazy useState — the function
+  // runs once on mount, never on re-render (rerender-lazy-state-init).
+  const [theme, setTheme] = useState(
+    () => localStorage.getItem('theme') ?? 'light'
+  )
+
+  // Apply theme to <html> as a data attribute so CSS selectors can target it.
+  // Runs synchronously after every theme change — no extra effect needed
+  // because the side-effect is trivial and co-located (rerender-move-effect-to-event).
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
+
   useEffect(() => {
     // Read the current session on mount.
     supabase.auth.getSession().then(({ data }) => {
@@ -30,6 +44,10 @@ function App() {
   // state or effect needed (rerender-derived-state-no-effect).
   const isLoading = session === undefined
 
+  function handleToggleTheme() {
+    setTheme(t => (t === 'light' ? 'dark' : 'light'))
+  }
+
   async function handleSignOut() {
     await supabase.auth.signOut()
   }
@@ -43,10 +61,16 @@ function App() {
     <NoteList
       userId={session.user.id}
       userEmail={session.user.email}
+      theme={theme}
+      onToggleTheme={handleToggleTheme}
       onSignOut={handleSignOut}
     />
   ) : (
-    <AuthForm onAuth={() => { /* session update handled by onAuthStateChange */ }} />
+    <AuthForm
+      theme={theme}
+      onToggleTheme={handleToggleTheme}
+      onAuth={() => { /* session update handled by onAuthStateChange */ }}
+    />
   )
 }
 

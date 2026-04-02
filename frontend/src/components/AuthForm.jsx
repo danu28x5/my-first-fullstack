@@ -6,9 +6,9 @@ import { supabase } from '../lib/supabase'
 // render, causing React to fully remount them (rerender-no-inline-components).
 
 /**
- * @param {{ onAuth: () => void }} props
+ * @param {{ onAuth: () => void, theme: string, onToggleTheme: () => void }} props
  */
-export default function AuthForm({ onAuth }) {
+export default function AuthForm({ onAuth, theme, onToggleTheme }) {
   const [mode, setMode] = useState(/** @type {'signin' | 'signup'} */ ('signin'))
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -76,7 +76,17 @@ export default function AuthForm({ onAuth }) {
   return (
     <div className="auth-container">
       <div className="auth-card">
-        <h1 className="auth-title">Notes</h1>
+        <div className="auth-card-header">
+          <h1 className="auth-title">Notes</h1>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={onToggleTheme}
+            aria-label="Toggle day/night theme"
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
+        </div>
 
         {/* Ternary: awaitingConfirmation is boolean so && would be safe, but
             ternary is used consistently for all conditional views in this file

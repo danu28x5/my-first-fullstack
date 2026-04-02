@@ -3,12 +3,23 @@ import { supabase } from '../lib/supabase'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
 
+// Stable sort comparator: pinned first, then newest first by created_at.
+// Defined at module level so it is never recreated on re-render and can be
+// shared by handleCreate and handleTogglePin (rerender-no-inline-components).
+/** @param {import('../lib/supabase').Note} a @param {import('../lib/supabase').Note} b */
+function pinSort(a, b) {
+  return (
+    Number(b.is_pinned) - Number(a.is_pinned) ||
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  )
+}
+
 // NoteList is defined at module top level (rerender-no-inline-components).
 
 /**
- * @param {{ userId: string, userEmail: string | undefined, onSignOut: () => void }} props
+ * @param {{ userId: string, userEmail: string | undefined, theme: string, onToggleTheme: () => void, onSignOut: () => void }} props
  */
-export default function NoteList({ userId, userEmail, onSignOut }) {
+export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSignOut }) {
   const [notes, setNotes] = useState(/** @type {import('../lib/supabase').Note[]} */ ([]))
   const [fetchError, setFetchError] = useState(/** @type {string | null} */ (null))
   const [loadingNotes, setLoadingNotes] = useState(true)
@@ -28,7 +39,8 @@ export default function NoteList({ userId, userEmail, onSignOut }) {
       const { data, error } = await supabase
         .from('notes')
         .select('*')
-        .order('updated_at', { ascending: false })
+        .order('is_pinned', { ascending: false })
+        .order('created_at', { ascending: false })
 
       if (cancelled) return
       if (error) {
@@ -54,10 +66,9 @@ export default function NoteList({ userId, userEmail, onSignOut }) {
 
     if (error) throw error
 
-    // Functional setState: always operates on the latest notes array.
-    // Never captures a stale snapshot from the closure
-    // (rerender-functional-setstate).
-    setNotes(curr => [data, ...curr])
+    // Functional setState: insert then re-sort so a new (unpinned) note never
+    // jumps in front of an existing pinned note (rerender-functional-setstate).
+    setNotes(curr => [...curr, data].sort(pinSort))
     setEditingNote(null)
   }, [])
 
@@ -82,6 +93,30 @@ export default function NoteList({ userId, userEmail, onSignOut }) {
     },
     [editingNote],
   )
+
+  // ── Pin / Unpin ─────────────────────────────────────────────────────────
+
+  const handleTogglePin = useCallback(async (note) => {
+    const { data, error } = await supabase
+      .from('notes')
+      .update({ is_pinned: !note.is_pinned })
+      .eq('id', note.id)
+      .select()
+      .single()
+
+    if (error) {
+      alert(`Pin failed: ${error.message}`)
+      return
+    }
+
+    // Functional setState: map the updated note in, then re-sort to match
+    // the DB order (is_pinned DESC, created_at DESC) without a re-fetch
+    // (rerender-functional-setstate).
+    setNotes(curr => {
+      const updated = curr.map(n => (n.id === data.id ? data : n))
+      return [...updated].sort(pinSort)
+    })
+  }, [])
 
   // ── Delete ───────────────────────────────────────────────────────────────
 
@@ -114,6 +149,14 @@ export default function NoteList({ userId, userEmail, onSignOut }) {
           <span className="notes-user">{userEmail}</span>
           <button
             type="button"
+            className="btn btn-ghost"
+            onClick={onToggleTheme}
+            aria-label="Toggle day/night theme"
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
+          <button
+            type="button"
             className="btn btn-secondary"
             onClick={() => setEditingNote('new')}
           >
@@ -143,6 +186,7 @@ export default function NoteList({ userId, userEmail, onSignOut }) {
                 note={note}
                 onEdit={setEditingNote}
                 onDelete={handleDelete}
+                onTogglePin={handleTogglePin}
               />
             ))}
           </div>
