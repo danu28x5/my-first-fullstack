@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
+import ProfileEditor from './ProfileEditor'
 
 // Stable sort comparator: pinned first, then newest first by created_at.
 // Defined at module level so it is never recreated on re-render and can be
@@ -29,29 +30,42 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [editingNote, setEditingNote] = useState(
     /** @type {import('../lib/supabase').Note | 'new' | null} */ (null),
   )
+  const [displayName, setDisplayName] = useState(/** @type {string | null} */ (null))
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false)
 
   // ── Fetch ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false
 
-    async function fetchNotes() {
-      const { data, error } = await supabase
-        .from('notes')
-        .select('*')
-        .order('is_pinned', { ascending: false })
-        .order('created_at', { ascending: false })
+    async function fetchData() {
+      // Fire both requests in parallel — they are independent (async-parallel).
+      const [notesResult, profileResult] = await Promise.all([
+        supabase
+          .from('notes')
+          .select('*')
+          .order('is_pinned', { ascending: false })
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('users')
+          .select('display_name')
+          .eq('id', userId)
+          .single(),
+      ])
 
       if (cancelled) return
-      if (error) {
-        setFetchError(error.message)
+      if (notesResult.error) {
+        setFetchError(notesResult.error.message)
       } else {
-        setNotes(data ?? [])
+        setNotes(notesResult.data ?? [])
       }
       setLoadingNotes(false)
+      if (!profileResult.error) {
+        setDisplayName(profileResult.data?.display_name ?? null)
+      }
     }
 
-    fetchNotes()
+    fetchData()
     return () => { cancelled = true }
   }, [])
 
@@ -118,6 +132,19 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     })
   }, [])
 
+  // ── Profile ───────────────────────────────────────────────────────────────
+
+  const handleProfileSave = useCallback(async (name) => {
+    const { error } = await supabase
+      .from('users')
+      .update({ display_name: name })
+      .eq('id', userId)
+    if (error) throw error
+    // Update header immediately without a re-fetch (rerender-functional-setstate).
+    setDisplayName(name)
+    setProfileEditorOpen(false)
+  }, [])
+
   // ── Delete ───────────────────────────────────────────────────────────────
 
   const handleDelete = useCallback(async (id) => {
@@ -146,7 +173,14 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       <header className="notes-header">
         <h1 className="notes-title">Notes</h1>
         <div className="notes-header-actions">
-          <span className="notes-user">{userEmail}</span>
+          <span className="notes-user">{displayName ?? userEmail}</span>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setProfileEditorOpen(true)}
+          >
+            Profile
+          </button>
           <button
             type="button"
             className="btn btn-ghost"
@@ -200,6 +234,13 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           initial={editorInitial}
           onSave={onSave}
           onCancel={() => setEditingNote(null)}
+        />
+      ) : null}
+      {profileEditorOpen ? (
+        <ProfileEditor
+          initialName={displayName ?? userEmail ?? ''}
+          onSave={handleProfileSave}
+          onCancel={() => setProfileEditorOpen(false)}
         />
       ) : null}
     </div>
