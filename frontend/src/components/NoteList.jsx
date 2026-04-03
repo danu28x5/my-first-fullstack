@@ -43,6 +43,15 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [toast, setToast] = useState(/** @type {string | null} */ (null))
   // Stable callback — passed to Toast as onDismiss (rerender-functional-setstate).
   const dismissToast = useCallback(() => setToast(null), [])
+  // searchQuery: bound to the input value; debouncedQuery: fires the fetch.
+  const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+
+  // ── Debounce: update debouncedQuery 300ms after the user stops typing ────────
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQuery(searchQuery), 300)
+    return () => clearTimeout(id)
+  }, [searchQuery])
 
   // ── Fetch: profile + tags (once on mount, parallel) ─────────────────────────
   // Promise.all fires both requests simultaneously — one round trip instead of
@@ -61,7 +70,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     return () => { cancelled = true }
   }, [])
 
-  // ── Fetch: notes (re-runs when active/archive view toggles) ─────────────────
+  // ── Fetch: notes (re-runs when view or debounced search query changes) ────────
 
   useEffect(() => {
     let cancelled = false
@@ -69,18 +78,34 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     setFetchError(null)
 
     async function fetchNotes() {
-      const query = showArchive
-        ? supabase
-            .from('notes')
-            .select('*, note_tags(tags(id, name))')
-            .not('archived_at', 'is', null)
-            .order('archived_at', { ascending: false })
-        : supabase
-            .from('notes')
-            .select('*, note_tags(tags(id, name))')
-            .is('archived_at', null)
-            .order('is_pinned', { ascending: false })
-            .order('created_at', { ascending: false })
+      let query
+      if (debouncedQuery.length > 0) {
+        // Full-text search via the stored `fts` tsvector column.
+        // plain mode = plainto_tsquery, no special syntax required from the user.
+        query = supabase
+          .from('notes')
+          .select('*, note_tags(tags(id, name))')
+          .textSearch('fts', debouncedQuery, { type: 'plain', config: 'english' })
+        if (showArchive) {
+          query = query.not('archived_at', 'is', null)
+        } else {
+          query = query.is('archived_at', null)
+        }
+        // Results returned in relevance order from Postgres — no .order() needed.
+      } else if (showArchive) {
+        query = supabase
+          .from('notes')
+          .select('*, note_tags(tags(id, name))')
+          .not('archived_at', 'is', null)
+          .order('archived_at', { ascending: false })
+      } else {
+        query = supabase
+          .from('notes')
+          .select('*, note_tags(tags(id, name))')
+          .is('archived_at', null)
+          .order('is_pinned', { ascending: false })
+          .order('created_at', { ascending: false })
+      }
 
       const { data, error } = await query
       if (cancelled) return
@@ -94,7 +119,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
     fetchNotes()
     return () => { cancelled = true }
-  }, [showArchive])
+  }, [showArchive, debouncedQuery])
 
   // ── Create ───────────────────────────────────────────────────────────────
 
@@ -260,6 +285,8 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // `isEditorOpen` is derived from `editingNote` during render — no separate
   // boolean state needed (rerender-derived-state-no-effect).
   const isEditorOpen = editingNote !== null
+  // isSearching is derived from debouncedQuery during render.
+  const isSearching = debouncedQuery.length > 0
   const editorInitial = editingNote === 'new' ? null : editingNote
 
   const onSave = editingNote === 'new' ? handleCreate : handleUpdate
@@ -325,23 +352,32 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         </div>
       </header>
 
-      {/* Tag filter bar — only in the active (non-archive) view, and only when
-          the user has at least one tag. Clicking an active tag deselects it.
+      {/* Tag filter bar — always rendered so the search input is always visible.
+          Tag pills are shown only in the active (non-archive) view with tags.
+          Search bar is pushed to the right via margin-left: auto.
           (rendering-conditional-render: ternary, not &&) */}
-      {!showArchive && allUserTags.length > 0 ? (
-        <div className="tag-filter-bar">
-          {allUserTags.map(tag => (
-            <button
-              key={tag.id}
-              type="button"
-              className={`tag-pill tag-pill--filter${activeTagId === tag.id ? ' tag-pill--active' : ''}`}
-              onClick={() => setActiveTagId(curr => (curr === tag.id ? null : tag.id))}
-            >
-              {tag.name}
-            </button>
-          ))}
+      <div className="tag-filter-bar">
+        {!showArchive && allUserTags.length > 0 ? allUserTags.map(tag => (
+          <button
+            key={tag.id}
+            type="button"
+            className={`tag-pill tag-pill--filter${activeTagId === tag.id ? ' tag-pill--active' : ''}`}
+            onClick={() => setActiveTagId(curr => (curr === tag.id ? null : tag.id))}
+          >
+            {tag.name}
+          </button>
+        )) : null}
+        <div className="search-bar">
+          <input
+            type="search"
+            className="search-bar__input"
+            placeholder="Search notes..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            aria-label="Search notes"
+          />
         </div>
-      ) : null}
+      </div>
 
       <main className="notes-main">
         {/* loadingNotes is boolean — && is safe here because the left side
@@ -353,7 +389,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           <p className="notes-status notes-error" role="alert">{fetchError}</p>
         ) : notes.length === 0 ? (
           <p className="notes-status">
-            {showArchive ? 'No archived notes.' : 'No notes yet. Create your first one!'}
+            {isSearching
+              ? `No results for \u201c${debouncedQuery}\u201d.`
+              : showArchive ? 'No archived notes.' : 'No notes yet. Create your first one!'}
           </p>
         ) : (
           <div className="notes-grid">
