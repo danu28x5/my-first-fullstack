@@ -111,7 +111,6 @@
 .field textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
 /* ============================================================
@@ -426,5 +425,212 @@
   gap: 0.75rem;
   justify-content: flex-end;
   margin-top: 0.25rem;
+}
+
+/* ============================================================
+   Tag pills (shared: note cards + tag filter bar)
+   ============================================================ */
+
+/* Base pill — used as a <span> inside note cards and the tag input. */
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  background: rgba(51, 138, 1, 0.08);
+  border: 1px solid rgba(51, 138, 1, 0.25);
+  color: var(--accent);
+  white-space: nowrap;
+  line-height: 1.5;
+}
+
+/* Pill in the tag input field — has a × remove button. */
+.tag-pill--removable button {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: inherit;
+  opacity: 0.6;
+}
+
+.tag-pill--removable button:hover {
+  opacity: 1;
+}
+
+/* Filter pill (used as a <button> in the tag filter bar). */
+.tag-pill--filter {
+  background: transparent;
+  border-color: rgba(51, 138, 1, 0.2);
+  border-radius: 12px;
+  font-size: 16px !important;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.tag-pill--filter:hover {
+  background: rgba(51, 138, 1, 0.08);
+  border-color: rgba(51, 138, 1, 0.35);
+  color: var(--accent);
+}
+
+/* Active filter — matches the notes-tab--active pattern. */
+.tag-pill--active {
+  background: rgba(51, 138, 1, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ============================================================
+   Tag filter bar (between header and main)
+   ============================================================ */
+
+.tag-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.6rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-filter);
+}
+
+/* ============================================================
+   Note card tag area
+   ============================================================ */
+
+.note-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* ============================================================
+   Tag input (inside NoteEditor)
+   ============================================================ */
+
+.tag-dropdown-wrapper {
+  position: relative;
+}
+
+/* Flex container that holds selected pills + the bare text input side-by-side. */
+.tag-input-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  min-height: 2.2rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  cursor: text;
+}
+
+.tag-input-wrapper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* The actual text input — invisible border so it blends with the wrapper. */
+.tag-input-wrapper input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-h);
+  font: inherit;
+  font-size: 0.95rem;
+  flex: 1;
+  min-width: 100px;
+  padding: 0;
+}
+
+/* ============================================================
+   Tag autocomplete dropdown
+   ============================================================ */
+
+.tag-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.tag-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  text-align: left;
+  background: transparent;
+  border: none;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text-h);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.tag-dropdown-item:hover {
+  background: rgba(51, 138, 1, 0.07);
+}
+
+/* Create option — visually separated and styled in accent italic. */
+.tag-dropdown-item--create {
+  border-top: 1px solid var(--border);
+  font-style: italic;
+  color: var(--accent);
+}
+
+.tag-dropdown-item--create:hover {
+  background: rgba(51, 138, 1, 0.10);
+}
+
+/* ============================================================
+   Toast notification (top-right, auto-dismisses after 1.5s)
+   ============================================================ */
+
+.toast {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  color: var(--text-h);
+  box-shadow: var(--shadow);
+  z-index: 200;
+  animation: toast-in 0.18s ease;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-0.4rem); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.toast--dismissing {
+  animation: toast-out 0.3s ease forwards;
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(-50%) translateY(0); }
+  to   { opacity: 0; transform: translateX(-50%) translateY(-0.4rem); }
 }
 

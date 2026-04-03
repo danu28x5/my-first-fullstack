@@ -153,3 +153,56 @@ insert into public.notes (user_id, title, content, created_at, updated_at) value
     now() - interval '7 days',
     now() - interval '7 days'
   );
+
+-- ============================================================
+-- TAGS
+-- Batch insert for all users in one round-trip (data-batch-inserts).
+-- ON CONFLICT DO NOTHING makes the seed idempotent on repeated db reset.
+-- ============================================================
+insert into public.tags (user_id, name, created_at) values
+  -- Alice's tags
+  ('a0000000-0000-0000-0000-000000000001', 'personal',  now() - interval '28 days'),
+  ('a0000000-0000-0000-0000-000000000001', 'shopping',  now() - interval '28 days'),
+  ('a0000000-0000-0000-0000-000000000001', 'work',      now() - interval '28 days'),
+  -- Bob's tags
+  ('b0000000-0000-0000-0000-000000000002', 'work',      now() - interval '18 days'),
+  ('b0000000-0000-0000-0000-000000000002', 'books',     now() - interval '18 days'),
+  -- Carol's tags
+  ('c0000000-0000-0000-0000-000000000003', 'tasks',     now() - interval '9 days'),
+  ('c0000000-0000-0000-0000-000000000003', 'postgres',  now() - interval '9 days')
+on conflict on constraint tags_user_name_unique do nothing;
+
+-- ============================================================
+-- NOTE_TAGS
+-- CTE resolves note IDs and tag IDs by name/title rather than
+-- hard-coding IDENTITY values that change across db reset.
+-- ============================================================
+with note_ids as (
+  select id, title, user_id from public.notes
+),
+tag_ids as (
+  select id, name, user_id from public.tags
+)
+insert into public.note_tags (note_id, tag_id)
+select n.id, t.id
+from (values
+  -- Alice: Welcome note → personal
+  ('a0000000-0000-0000-0000-000000000001'::uuid, 'Welcome to Notes',    'personal'),
+  -- Alice: Shopping List → shopping, personal
+  ('a0000000-0000-0000-0000-000000000001'::uuid, 'Shopping List',       'shopping'),
+  ('a0000000-0000-0000-0000-000000000001'::uuid, 'Shopping List',       'personal'),
+  -- Alice: Project Ideas → work, personal
+  ('a0000000-0000-0000-0000-000000000001'::uuid, 'Project Ideas',       'work'),
+  ('a0000000-0000-0000-0000-000000000001'::uuid, 'Project Ideas',       'personal'),
+  -- Bob: Meeting Notes → work
+  ('b0000000-0000-0000-0000-000000000002'::uuid, 'Meeting Notes',       'work'),
+  -- Bob: Book Recommendations → books
+  ('b0000000-0000-0000-0000-000000000002'::uuid, 'Book Recommendations','books'),
+  -- Carol: Today's Tasks → tasks
+  ('c0000000-0000-0000-0000-000000000003'::uuid, 'Today''s Tasks',      'tasks'),
+  -- Carol: Postgres Tips → postgres
+  ('c0000000-0000-0000-0000-000000000003'::uuid, 'Postgres Tips',       'postgres')
+) as mapping(u_id, note_title, tag_name)
+join note_ids n on n.title = mapping.note_title and n.user_id = mapping.u_id
+join tag_ids  t on t.name  = mapping.tag_name   and t.user_id = mapping.u_id
+on conflict do nothing;

@@ -4,13 +4,13 @@
 
 /**
  * @param {{
- *   note: import('../lib/supabase').Note,
+ *   note: import('../lib/supabase').NoteWithTags,
  *   isArchiveView: boolean,
- *   onEdit: (note: import('../lib/supabase').Note) => void,
+ *   onEdit: (note: import('../lib/supabase').NoteWithTags) => void,
  *   onArchive: (id: number) => void,
  *   onUnarchive: (id: number) => void,
  *   onDeletePermanently: (id: number) => void,
- *   onTogglePin: (note: import('../lib/supabase').Note) => void
+ *   onTogglePin: (note: import('../lib/supabase').NoteWithTags) => void
  * }} props
  */
 export default function NoteCard({ note, isArchiveView, onEdit, onArchive, onUnarchive, onDeletePermanently, onTogglePin }) {
@@ -30,6 +30,20 @@ export default function NoteCard({ note, isArchiveView, onEdit, onArchive, onUna
             (rendering-conditional-render). */}
         {note.content !== null ? (
           <p className="note-card-content">{note.content}</p>
+        ) : null}
+        {/* Tag pills — shown when the note has at least one tag.
+            note_tags may be undefined on create before re-fetch, so optional
+            chaining guards the length check (rendering-conditional-render). */}
+        {note.note_tags?.length > 0 ? (
+          <div className="note-card-tags">
+            {note.note_tags.map(nt =>
+              nt.tags !== null ? (
+                <span key={nt.tags.id} className="tag-pill">
+                  {nt.tags.name}
+                </span>
+              ) : null
+            )}
+          </div>
         ) : null}
         <time className="note-card-date" dateTime={note.updated_at}>
           {formattedDate}

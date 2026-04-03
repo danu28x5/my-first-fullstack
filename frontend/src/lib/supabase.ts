@@ -15,3 +15,20 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey)
 export type Note = Database['public']['Tables']['notes']['Row']
 export type NoteInsert = Database['public']['Tables']['notes']['Insert']
 export type NoteUpdate = Database['public']['Tables']['notes']['Update']
+
+// Tag row shape — kept here (not generated) because database.types.ts is
+// manually patched on this machine. Update after: supabase gen types typescript --local
+export type Tag = {
+  id: number
+  user_id: string
+  name: string
+  created_at: string
+}
+
+// Shape returned by .select('*, note_tags(tags(id, name))')
+// note_tags is an array because it is a one-to-many nested relation;
+// tags is singular (the FK on note_tags points to one tag row), but
+// Supabase returns null when the FK target is missing.
+export type NoteWithTags = Note & {
+  note_tags: { tags: Pick<Tag, 'id' | 'name'> | null }[]
+}

@@ -3,6 +3,10 @@ import { supabase } from '../lib/supabase'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
 import ProfileEditor from './ProfileEditor'
+import Toast from './Toast'
+// NoteWithTags and Tag are JSDoc-only imports — no runtime cost.
+/** @typedef {import('../lib/supabase').NoteWithTags} NoteWithTags */
+/** @typedef {import('../lib/supabase').Tag} Tag */
 
 // Stable sort comparator: pinned first, then newest first by created_at.
 // Defined at module level so it is never recreated on re-render and can be
@@ -33,20 +37,27 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [displayName, setDisplayName] = useState(/** @type {string | null} */ (null))
   const [profileEditorOpen, setProfileEditorOpen] = useState(false)
   const [showArchive, setShowArchive] = useState(false)
+  const [allUserTags, setAllUserTags] = useState(/** @type {Tag[]} */ ([]))
+  // null = no filter; a tag id = show only notes with that tag
+  const [activeTagId, setActiveTagId] = useState(/** @type {number | null} */ (null))
+  const [toast, setToast] = useState(/** @type {string | null} */ (null))
+  // Stable callback — passed to Toast as onDismiss (rerender-functional-setstate).
+  const dismissToast = useCallback(() => setToast(null), [])
 
-  // ── Fetch: profile (once on mount) ────────────────────────────────────────
+  // ── Fetch: profile + tags (once on mount, parallel) ─────────────────────────
+  // Promise.all fires both requests simultaneously — one round trip instead of
+  // two sequential ones (async-parallel).
 
   useEffect(() => {
     let cancelled = false
-    supabase
-      .from('users')
-      .select('display_name')
-      .eq('id', userId)
-      .single()
-      .then(({ data, error }) => {
-        if (cancelled || error) return
-        setDisplayName(data?.display_name ?? null)
-      })
+    Promise.all([
+      supabase.from('users').select('display_name').eq('id', userId).single(),
+      supabase.from('tags').select('id, name').order('name'),
+    ]).then(([{ data: profile }, { data: tags }]) => {
+      if (cancelled) return
+      setDisplayName(profile?.display_name ?? null)
+      setAllUserTags(tags ?? [])
+    })
     return () => { cancelled = true }
   }, [])
 
@@ -61,12 +72,12 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       const query = showArchive
         ? supabase
             .from('notes')
-            .select('*')
+            .select('*, note_tags(tags(id, name))')
             .not('archived_at', 'is', null)
             .order('archived_at', { ascending: false })
         : supabase
             .from('notes')
-            .select('*')
+            .select('*, note_tags(tags(id, name))')
             .is('archived_at', null)
             .order('is_pinned', { ascending: false })
             .order('created_at', { ascending: false })
@@ -87,7 +98,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
   // ── Create ───────────────────────────────────────────────────────────────
 
-  const handleCreate = useCallback(async (title, content) => {
+  const handleCreate = useCallback(async (title, content, selectedTags) => {
     const { data, error } = await supabase
       .from('notes')
       .insert({ title, content: content || null, user_id: userId })
@@ -96,16 +107,28 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
     if (error) throw error
 
-    // Functional setState: insert then re-sort so a new (unpinned) note never
-    // jumps in front of an existing pinned note (rerender-functional-setstate).
-    setNotes(curr => [...curr, data].sort(pinSort))
+    // Insert note_tags rows if the user selected any tags.
+    // This depends on the note id so it cannot be parallelised with the insert.
+    if (selectedTags.length > 0) {
+      const { error: tagError } = await supabase
+        .from('note_tags')
+        .insert(selectedTags.map(t => ({ note_id: data.id, tag_id: t.id })))
+      if (tagError) throw tagError
+    }
+
+    // Build the NoteWithTags shape locally so we avoid a re-fetch.
+    // Functional setState: insert then re-sort (rerender-functional-setstate).
+    /** @type {NoteWithTags} */
+    const noteWithTags = { ...data, note_tags: selectedTags.map(t => ({ tags: t })) }
+    setNotes(curr => [...curr, noteWithTags].sort(pinSort))
     setEditingNote(null)
+    setToast('Note created')
   }, [])
 
   // ── Update ───────────────────────────────────────────────────────────────
 
   const handleUpdate = useCallback(
-    async (title, content) => {
+    async (title, content, selectedTags) => {
       if (editingNote === null || editingNote === 'new') return
 
       const { data, error } = await supabase
@@ -117,9 +140,31 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
       if (error) throw error
 
+      // Diff the original tags against the new selection to find what to add/remove.
+      const originalTagIds = new Set(
+        editingNote.note_tags?.flatMap(nt => (nt.tags !== null ? [nt.tags.id] : [])) ?? []
+      )
+      const newTagIds = new Set(selectedTags.map(t => t.id))
+      const toAdd = selectedTags.filter(t => !originalTagIds.has(t.id))
+      const toRemove = [...originalTagIds].filter(id => !newTagIds.has(id))
+
+      // Inserts and deletes are independent — run them in parallel (async-parallel).
+      await Promise.all([
+        toAdd.length > 0
+          ? supabase.from('note_tags').insert(toAdd.map(t => ({ note_id: data.id, tag_id: t.id })))
+          : Promise.resolve(),
+        toRemove.length > 0
+          ? supabase.from('note_tags').delete().eq('note_id', data.id).in('tag_id', toRemove)
+          : Promise.resolve(),
+      ])
+
+      // Build the NoteWithTags shape locally to avoid a re-fetch.
       // Functional setState (rerender-functional-setstate).
-      setNotes(curr => curr.map(n => (n.id === data.id ? data : n)))
+      /** @type {NoteWithTags} */
+      const noteWithTags = { ...data, note_tags: selectedTags.map(t => ({ tags: t })) }
+      setNotes(curr => curr.map(n => (n.id === noteWithTags.id ? noteWithTags : n)))
       setEditingNote(null)
+      setToast('Note saved')
     },
     [editingNote],
   )
@@ -139,13 +184,30 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       return
     }
 
-    // Functional setState: map the updated note in, then re-sort to match
-    // the DB order (is_pinned DESC, created_at DESC) without a re-fetch
-    // (rerender-functional-setstate).
+    // Functional setState: map the updated note in, preserving note_tags from the
+    // existing entry (the pin .update() only returns core columns, not joined data),
+    // then re-sort (rerender-functional-setstate).
     setNotes(curr => {
-      const updated = curr.map(n => (n.id === data.id ? data : n))
+      const updated = curr.map(n => (n.id === data.id ? { ...data, note_tags: n.note_tags } : n))
       return [...updated].sort(pinSort)
     })
+  }, [])
+
+  // ── Tags ──────────────────────────────────────────────────────────────────
+
+  // Creates a new tag in the DB, adds it to allUserTags in sorted order,
+  // and returns the created tag so NoteEditor can immediately select it.
+  const handleCreateTag = useCallback(async (name) => {
+    const { data, error } = await supabase
+      .from('tags')
+      .insert({ name, user_id: userId })
+      .select('id, name')
+      .single()
+    if (error) throw error
+    // Functional setState — keep list sorted alphabetically (rerender-functional-setstate).
+    setAllUserTags(curr => [...curr, data].sort((a, b) => a.name.localeCompare(b.name)))
+    setToast('Tag created')
+    return data
   }, [])
 
   // ── Profile ───────────────────────────────────────────────────────────────
@@ -171,6 +233,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     if (error) { alert(`Archive failed: ${error.message}`); return }
     // Remove from active view immediately (rerender-functional-setstate).
     setNotes(curr => curr.filter(n => n.id !== id))
+    setToast('Note archived')
   }, [])
 
   const handleUnarchive = useCallback(async (id) => {
@@ -181,6 +244,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     if (error) { alert(`Unarchive failed: ${error.message}`); return }
     // Remove from archive view immediately (rerender-functional-setstate).
     setNotes(curr => curr.filter(n => n.id !== id))
+    setToast('Note unarchived')
   }, [])
 
   const handleDeletePermanently = useCallback(async (id) => {
@@ -188,6 +252,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     if (error) { alert(`Delete failed: ${error.message}`); return }
     // Functional setState (rerender-functional-setstate).
     setNotes(curr => curr.filter(n => n.id !== id))
+    setToast('Note deleted')
   }, [])
 
   // ── Derived ──────────────────────────────────────────────────────────────
@@ -198,6 +263,13 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const editorInitial = editingNote === 'new' ? null : editingNote
 
   const onSave = editingNote === 'new' ? handleCreate : handleUpdate
+
+  // Filter notes by the active tag without a re-fetch — derived from state
+  // during render (rerender-derived-state-no-effect).
+  // Uses Set.has() for O(1) membership check per tag entry (js-set-map-lookups).
+  const visibleNotes = activeTagId === null
+    ? notes
+    : notes.filter(n => n.note_tags.some(nt => nt.tags?.id === activeTagId))
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -215,7 +287,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           <button
             type="button"
             className={`btn notes-tab${showArchive ? ' notes-tab--active' : ''}`}
-            onClick={() => setShowArchive(true)}
+            onClick={() => { setShowArchive(true); setActiveTagId(null) }}
           >
             Archived
           </button>
@@ -253,6 +325,24 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         </div>
       </header>
 
+      {/* Tag filter bar — only in the active (non-archive) view, and only when
+          the user has at least one tag. Clicking an active tag deselects it.
+          (rendering-conditional-render: ternary, not &&) */}
+      {!showArchive && allUserTags.length > 0 ? (
+        <div className="tag-filter-bar">
+          {allUserTags.map(tag => (
+            <button
+              key={tag.id}
+              type="button"
+              className={`tag-pill tag-pill--filter${activeTagId === tag.id ? ' tag-pill--active' : ''}`}
+              onClick={() => setActiveTagId(curr => (curr === tag.id ? null : tag.id))}
+            >
+              {tag.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <main className="notes-main">
         {/* loadingNotes is boolean — && is safe here because the left side
             is a boolean, not a number (rendering-conditional-render applies
@@ -267,7 +357,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           </p>
         ) : (
           <div className="notes-grid">
-            {notes.map(note => (
+            {visibleNotes.map(note => (
               <NoteCard
                 key={note.id}
                 note={note}
@@ -288,7 +378,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       {isEditorOpen ? (
         <NoteEditor
           initial={editorInitial}
+          allUserTags={allUserTags}
           onSave={onSave}
+          onCreateTag={handleCreateTag}
           onCancel={() => setEditingNote(null)}
         />
       ) : null}
@@ -299,6 +391,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           onCancel={() => setProfileEditorOpen(false)}
         />
       ) : null}
+
+      {/* Top-right toast — auto-dismisses after 1500 ms (rendering-conditional-render). */}
+      <Toast message={toast} onDismiss={dismissToast} />
     </div>
   )
 }
