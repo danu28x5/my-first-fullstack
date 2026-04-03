@@ -81,13 +81,17 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           /** @type {import('../lib/supabase').NoteWithTags} */
           const incoming = /** @type {any} */ (payload.new)
           // Dedup: skip if the same-tab optimistic update already added this note.
+          // totalCount is incremented inside the updater so it only fires when
+          // the note is genuinely new — prevents double-increment with the
+          // optimistic update in handleCreate, which would cause hasMore to
+          // become true again after all notes are already loaded.
           setNotes(curr => {
             if (curr.some(n => n.id === incoming.id)) return curr
             // Realtime delivers the `notes` row only — no join data.
             const noteWithTags = { ...incoming, note_tags: [] }
+            setTotalCount(c => c !== null ? c + 1 : c)
             return [...curr, noteWithTags].sort(pinSort)
           })
-          setTotalCount(curr => curr !== null ? curr + 1 : curr)
         },
       )
       .on(
