@@ -208,24 +208,41 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // ── Pin / Unpin ─────────────────────────────────────────────────────────
 
   const handleTogglePin = useCallback(async (note) => {
+    // Optimistic update: flip is_pinned and re-sort immediately.
+    // Snapshot is captured inside the functional updater to avoid stale closures
+    // (rerender-functional-setstate).
+    let snapshot
+    setNotes(curr => {
+      snapshot = curr
+      const updated = curr.map(n =>
+        n.id === note.id ? { ...n, is_pinned: !note.is_pinned } : n
+      )
+      return [...updated].sort(pinSort)
+    })
+
+    const newPinned = !note.is_pinned
     const { data, error } = await supabase
       .from('notes')
-      .update({ is_pinned: !note.is_pinned })
+      .update({ is_pinned: newPinned })
       .eq('id', note.id)
       .select()
       .single()
 
     if (error) {
-      alert(`Pin failed: ${error.message}`)
+      // Rollback to the pre-optimistic snapshot and notify the user.
+      setNotes(snapshot)
+      setToast(`${newPinned ? 'Pin' : 'Unpin'} failed: ${error.message}`)
       return
     }
 
-    // Functional setState: map the updated note in, preserving note_tags from the
-    // existing entry (the pin .update() only returns core columns, not joined data),
-    // then re-sort (rerender-functional-setstate).
+    // Reconcile server-canonical fields (e.g. updated_at) while preserving
+    // note_tags — the update() response doesn't include joined data
+    // (rerender-functional-setstate).
     setNotes(curr => {
-      const updated = curr.map(n => (n.id === data.id ? { ...data, note_tags: n.note_tags } : n))
-      return [...updated].sort(pinSort)
+      const reconciled = curr.map(n =>
+        n.id === data.id ? { ...data, note_tags: n.note_tags } : n
+      )
+      return [...reconciled].sort(pinSort)
     })
   }, [])
 
@@ -262,25 +279,42 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // ── Archive / Unarchive / Delete ──────────────────────────────────────────────────────
 
   const handleArchive = useCallback(async (id) => {
+    // Optimistic update: remove from active view immediately.
+    // Both notes and totalCount snapshots are captured for a complete rollback.
+    let snapshot
+    let countSnapshot
+    setNotes(curr => { snapshot = curr; return curr.filter(n => n.id !== id) })
+    setTotalCount(curr => { countSnapshot = curr; return curr !== null ? curr - 1 : curr })
+
     const { error } = await supabase
       .from('notes')
       .update({ archived_at: new Date().toISOString() })
       .eq('id', id)
-    if (error) { alert(`Archive failed: ${error.message}`); return }
-    // Remove from active view immediately (rerender-functional-setstate).
-    setNotes(curr => curr.filter(n => n.id !== id))
-    setTotalCount(curr => curr !== null ? curr - 1 : curr)
+
+    if (error) {
+      setNotes(snapshot)
+      setTotalCount(countSnapshot)
+      setToast(`Archive failed: ${error.message}`)
+      return
+    }
     setToast('Note archived')
   }, [])
 
   const handleUnarchive = useCallback(async (id) => {
+    // Optimistic update: remove from archive view immediately.
+    let snapshot
+    setNotes(curr => { snapshot = curr; return curr.filter(n => n.id !== id) })
+
     const { error } = await supabase
       .from('notes')
       .update({ archived_at: null })
       .eq('id', id)
-    if (error) { alert(`Unarchive failed: ${error.message}`); return }
-    // Remove from archive view immediately (rerender-functional-setstate).
-    setNotes(curr => curr.filter(n => n.id !== id))
+
+    if (error) {
+      setNotes(snapshot)
+      setToast(`Unarchive failed: ${error.message}`)
+      return
+    }
     setToast('Note unarchived')
   }, [])
 
