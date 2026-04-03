@@ -5,9 +5,10 @@ import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
 import ProfileEditor from './ProfileEditor'
 import Toast from './Toast'
-// NoteWithTags and Tag are JSDoc-only imports — no runtime cost.
+// NoteWithTags, Tag, and NoteAttachmentPreview are JSDoc-only imports — no runtime cost.
 /** @typedef {import('../lib/supabase').NoteWithTags} NoteWithTags */
 /** @typedef {import('../lib/supabase').Tag} Tag */
+/** @typedef {import('../lib/supabase').NoteAttachmentPreview} NoteAttachmentPreview */
 
 const PAGE_SIZE = 10
 
@@ -94,7 +95,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           setNotes(curr => {
             if (curr.some(n => n.id === incoming.id)) return curr
             // Realtime delivers the `notes` row only — no join data.
-            const noteWithTags = { ...incoming, note_tags: [] }
+            const noteWithTags = { ...incoming, note_tags: [], note_attachments: [] }
             setTotalCount(c => c !== null ? c + 1 : c)
             return [...curr, noteWithTags].sort(pinSort)
           })
@@ -120,9 +121,11 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
               return curr.filter(n => n.id !== updated.id)
             }
             // Same view — update the row and re-sort (handles pin, title, content).
-            // Preserve note_tags: Realtime does not deliver join data.
+            // Preserve note_tags and note_attachments: Realtime does not deliver join data.
             const reconciled = curr.map(n =>
-              n.id === updated.id ? { ...updated, note_tags: existing.note_tags } : n
+              n.id === updated.id
+                ? { ...updated, note_tags: existing.note_tags, note_attachments: existing.note_attachments }
+                : n
             )
             return [...reconciled].sort(pinSort)
           })
@@ -192,7 +195,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         // plain mode = plainto_tsquery, no special syntax required from the user.
         query = supabase
           .from('notes')
-          .select('*, note_tags(tags(id, name))')
+          .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)')
           .textSearch('fts', debouncedQuery, { type: 'plain', config: 'english' })
         if (showArchive) {
           query = query.not('archived_at', 'is', null)
@@ -203,13 +206,13 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       } else if (showArchive) {
         query = supabase
           .from('notes')
-          .select('*, note_tags(tags(id, name))')
+          .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)')
           .not('archived_at', 'is', null)
           .order('archived_at', { ascending: false })
       } else {
         query = supabase
           .from('notes')
-          .select('*, note_tags(tags(id, name))', { count: 'exact' })
+          .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)', { count: 'exact' })
           .is('archived_at', null)
           .order('is_pinned', { ascending: false })
           .order('created_at', { ascending: false })
@@ -235,7 +238,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
   // ── Create ───────────────────────────────────────────────────────────────
 
-  const handleCreate = useCallback(async (title, content, selectedTags) => {
+  const handleCreate = useCallback(async (title, content, selectedTags, pendingFiles = []) => {
     const { data, error } = await supabase
       .from('notes')
       .insert({ title, content: content || null, user_id: userId })
@@ -244,24 +247,58 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
     if (error) throw error
 
-    // Insert note_tags rows if the user selected any tags.
-    // This depends on the note id so it cannot be parallelised with the insert.
-    if (selectedTags.length > 0) {
-      const { error: tagError } = await supabase
-        .from('note_tags')
-        .insert(selectedTags.map(t => ({ note_id: data.id, tag_id: t.id })))
-      if (tagError) throw tagError
+    // Build file upload descriptors — paths are computed before the upload
+    // so they are available for both the storage call and the metadata insert.
+    const fileUploads = pendingFiles.map(file => {
+      const safeName = `${Date.now()}_${crypto.randomUUID().slice(0, 8)}_${file.name}`
+      const path = `${userId}/${data.id}/${safeName}`
+      return { file, path }
+    })
+
+    // Tag inserts and file uploads are independent — run in parallel
+    // (async-parallel rule: Promise.all for independent operations).
+    const tagOp = selectedTags.length > 0
+      ? supabase.from('note_tags').insert(selectedTags.map(t => ({ note_id: data.id, tag_id: t.id })))
+      : Promise.resolve({ error: null })
+    const uploadOps = fileUploads.map(({ file, path }) =>
+      supabase.storage.from('attachments').upload(path, file, { contentType: file.type })
+    )
+    const [tagResult, ...uploadResults] = await Promise.all([tagOp, ...uploadOps])
+    if (tagResult.error) throw tagResult.error
+    const firstUploadError = uploadResults.find(r => r.error)?.error
+    if (firstUploadError) throw firstUploadError
+
+    // Insert metadata rows after all uploads succeed.
+    let attachmentRows = []
+    if (fileUploads.length > 0) {
+      const { data: attData, error: attError } = await supabase
+        .from('note_attachments')
+        .insert(fileUploads.map(({ file, path }) => ({
+          note_id: data.id,
+          user_id: userId,
+          storage_path: path,
+          file_name: file.name,
+          mime_type: file.type,
+          byte_size: file.size,
+        })))
+        .select('id, file_name, storage_path, mime_type, byte_size, created_at')
+      if (attError) throw attError
+      attachmentRows = attData ?? []
     }
 
     // Build the NoteWithTags shape locally so we avoid a re-fetch.
     // Functional setState: insert then re-sort (rerender-functional-setstate).
     /** @type {NoteWithTags} */
-    const noteWithTags = { ...data, note_tags: selectedTags.map(t => ({ tags: t })) }
+    const noteWithTags = {
+      ...data,
+      note_tags: selectedTags.map(t => ({ tags: t })),
+      note_attachments: attachmentRows,
+    }
     setNotes(curr => [...curr, noteWithTags].sort(pinSort))
     setTotalCount(curr => curr !== null ? curr + 1 : curr)
     setEditingNote(null)
     setToast('Note created')
-  }, [])
+  }, [userId])
 
   // ── Update ───────────────────────────────────────────────────────────────
 
@@ -297,10 +334,18 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       ])
 
       // Build the NoteWithTags shape locally to avoid a re-fetch.
-      // Functional setState (rerender-functional-setstate).
-      /** @type {NoteWithTags} */
-      const noteWithTags = { ...data, note_tags: selectedTags.map(t => ({ tags: t })) }
-      setNotes(curr => curr.map(n => (n.id === noteWithTags.id ? noteWithTags : n)))
+      // Preserve note_attachments from the current state — the update response
+      // does not include joined data (rerender-functional-setstate).
+      setNotes(curr => {
+        const existing = curr.find(n => n.id === data.id)
+        /** @type {NoteWithTags} */
+        const noteWithTags = {
+          ...data,
+          note_tags: selectedTags.map(t => ({ tags: t })),
+          note_attachments: existing?.note_attachments ?? [],
+        }
+        return curr.map(n => (n.id === noteWithTags.id ? noteWithTags : n))
+      })
       setEditingNote(null)
       setToast('Note saved')
     },
@@ -338,11 +383,13 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     }
 
     // Reconcile server-canonical fields (e.g. updated_at) while preserving
-    // note_tags — the update() response doesn't include joined data
-    // (rerender-functional-setstate).
+    // note_tags and note_attachments — the update() response doesn't include
+    // joined data (rerender-functional-setstate).
     setNotes(curr => {
       const reconciled = curr.map(n =>
-        n.id === data.id ? { ...data, note_tags: n.note_tags } : n
+        n.id === data.id
+          ? { ...data, note_tags: n.note_tags, note_attachments: n.note_attachments }
+          : n
       )
       return [...reconciled].sort(pinSort)
     })
@@ -387,6 +434,75 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     const { data } = await supabase.storage.from('avatars').createSignedUrl(path, 3600)
     setAvatarSignedUrl(data?.signedUrl ?? null)
   }, [])
+
+  // ── Attachment: upload a file to an existing note ─────────────────────────
+
+  // Generates a collision-safe storage path, uploads the file, inserts the
+  // metadata row, then updates state optimistically so the attachment appears
+  // in the editor immediately without a re-fetch.
+  const handleAttachFile = useCallback(async (file) => {
+    if (editingNote === null || editingNote === 'new') return
+    const safeName = `${Date.now()}_${crypto.randomUUID().slice(0, 8)}_${file.name}`
+    const path = `${userId}/${editingNote.id}/${safeName}`
+
+    const { error: storageError } = await supabase.storage
+      .from('attachments')
+      .upload(path, file, { contentType: file.type })
+    if (storageError) throw storageError
+
+    const { data, error: dbError } = await supabase
+      .from('note_attachments')
+      .insert({
+        note_id: editingNote.id,
+        user_id: userId,
+        storage_path: path,
+        file_name: file.name,
+        mime_type: file.type,
+        byte_size: file.size,
+      })
+      .select('id, file_name, storage_path, mime_type, byte_size, created_at')
+      .single()
+    if (dbError) throw dbError
+
+    // Append to the note's attachment list in state (rerender-functional-setstate).
+    setNotes(curr => curr.map(n =>
+      n.id === editingNote.id
+        ? { ...n, note_attachments: [...n.note_attachments, data] }
+        : n
+    ))
+  }, [editingNote, userId])
+
+  // ── Attachment: optimistic delete ────────────────────────────────────────
+
+  // Removes the attachment from state immediately, then deletes the storage
+  // object and the metadata row in parallel (async-parallel rule).  Rolls
+  // back if either operation fails.
+  const handleDeleteAttachment = useCallback(async (attachment) => {
+    if (editingNote === null || editingNote === 'new') return
+    const noteId = editingNote.id
+
+    let snapshot
+    setNotes(curr => {
+      snapshot = curr
+      return curr.map(n =>
+        n.id === noteId
+          ? { ...n, note_attachments: n.note_attachments.filter(a => a.id !== attachment.id) }
+          : n
+      )
+    })
+
+    // Storage removal and DB row deletion are independent — run in parallel
+    // (async-parallel rule).
+    const [storageResult, dbResult] = await Promise.all([
+      supabase.storage.from('attachments').remove([attachment.storage_path]),
+      supabase.from('note_attachments').delete().eq('id', attachment.id),
+    ])
+
+    if (storageResult.error || dbResult.error) {
+      setNotes(snapshot)
+      setToast(`Delete failed: ${storageResult.error?.message ?? dbResult.error?.message}`)
+    }
+  }, [editingNote])
 
   // ── Archive / Unarchive / Delete ──────────────────────────────────────────────────────
 
@@ -448,7 +564,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     const offset = notes.length
     const { data, error } = await supabase
       .from('notes')
-      .select('*, note_tags(tags(id, name))')
+      .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)')
       .is('archived_at', null)
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
@@ -502,31 +618,24 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           </button>
         </div>
         <div className="notes-header-actions">
-          {/* key=avatarSignedUrl resets AvatarImage's imgError state when the
+          {/* Avatar + name as a single profile button.
+              key=avatarSignedUrl resets AvatarImage's imgError state when the
               URL changes — keyed-reset pattern avoids an effect for derived
               error state (rerender-derived-state-no-effect). */}
-          <AvatarImage
-            key={avatarSignedUrl}
-            signedUrl={avatarSignedUrl}
-            displayName={displayName}
-            email={userEmail}
-            size="sm"
-          />
-          <span className="notes-user">{displayName ?? userEmail}</span>
           <button
             type="button"
-            className="btn btn-ghost"
+            className="btn btn-ghost notes-profile-btn"
             onClick={() => setProfileEditorOpen(true)}
+            aria-label="Edit profile"
           >
-            Profile
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={onToggleTheme}
-            aria-label="Toggle day/night theme"
-          >
-            {theme === 'light' ? '🌙' : '☀️'}
+            <AvatarImage
+              key={avatarSignedUrl}
+              signedUrl={avatarSignedUrl}
+              displayName={displayName}
+              email={userEmail}
+              size="sm"
+            />
+            <span className="notes-user">{displayName ?? userEmail}</span>
           </button>
           {/* + New note hidden in archive view (rendering-conditional-render). */}
           {!showArchive ? (
@@ -540,6 +649,14 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           ) : null}
           <button type="button" className="btn btn-ghost" onClick={onSignOut}>
             Sign out
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            onClick={onToggleTheme}
+            aria-label="Toggle day/night theme"
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
           </button>
         </div>
       </header>
@@ -626,6 +743,12 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           onSave={onSave}
           onCreateTag={handleCreateTag}
           onCancel={() => setEditingNote(null)}
+          noteId={editingNote === 'new' ? null : editingNote?.id ?? null}
+          noteAttachments={editingNote === 'new' || editingNote === null
+            ? []
+            : (notes.find(n => n.id === editingNote.id)?.note_attachments ?? [])}
+          onAttachFile={handleAttachFile}
+          onDeleteAttachment={handleDeleteAttachment}
         />
       ) : null}
       {profileEditorOpen ? (

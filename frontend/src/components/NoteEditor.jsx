@@ -1,17 +1,36 @@
-import { useState } from 'react'
+import { useRef, useState, useTransition } from 'react'
+import AttachmentPreview from './AttachmentPreview'
 
 // NoteEditor is defined at module top level (rerender-no-inline-components).
+
+// Module-level constants — never recreated on re-render (rendering-hoist-jsx rule).
+const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'])
+const MAX_BYTES = 10 * 1024 * 1024 // 10 MiB
 
 /**
  * @param {{
  *   initial: import('../lib/supabase').NoteWithTags | null,
  *   allUserTags: import('../lib/supabase').Tag[],
- *   onSave: (title: string, content: string, selectedTags: {id: number, name: string}[]) => Promise<void>,
+ *   onSave: (title: string, content: string, selectedTags: {id: number, name: string}[], pendingFiles: File[]) => Promise<void>,
  *   onCreateTag: (name: string) => Promise<{id: number, name: string}>,
- *   onCancel: () => void
+ *   onCancel: () => void,
+ *   noteId: number | null,
+ *   noteAttachments: import('../lib/supabase').NoteAttachmentPreview[],
+ *   onAttachFile: (file: File) => Promise<void>,
+ *   onDeleteAttachment: (attachment: import('../lib/supabase').NoteAttachmentPreview) => Promise<void>,
  * }} props
  */
-export default function NoteEditor({ initial, allUserTags, onSave, onCreateTag, onCancel }) {
+export default function NoteEditor({
+  initial,
+  allUserTags,
+  onSave,
+  onCreateTag,
+  onCancel,
+  noteId,
+  noteAttachments,
+  onAttachFile,
+  onDeleteAttachment,
+}) {
   // Lazy state initialisers -- each function is only called once on mount, not on
   // every render (rerender-lazy-state-init).
   const [title, setTitle] = useState(() => initial?.title ?? '')
@@ -23,6 +42,20 @@ export default function NoteEditor({ initial, allUserTags, onSave, onCreateTag, 
   const [showDropdown, setShowDropdown] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(/** @type {string | null} */ (null))
+
+  // Pending files are queued here for new notes (no note id yet); they are
+  // uploaded in NoteList.handleCreate after the note row is created.
+  // In edit mode, onAttachFile uploads immediately via useTransition below.
+  const [pendingFiles, setPendingFiles] = useState(/** @type {File[]} */ ([]))
+  const [uploadError, setUploadError] = useState(/** @type {string | null} */ (null))
+
+  // useTransition manages the upload loading state automatically — isPending
+  // resets correctly even if the transition throws (rendering-usetransition-loading rule).
+  const [isUploading, startUpload] = useTransition()
+
+  // Ref to hidden <input type="file"> so the button can trigger it
+  // without the input appearing in the DOM flow.
+  const fileInputRef = useRef(/** @type {HTMLInputElement | null} */ (null))
 
   // All derived during render -- no effects needed (rerender-derived-state-no-effect).
   const isEditing = initial !== null
@@ -58,7 +91,7 @@ export default function NoteEditor({ initial, allUserTags, onSave, onCreateTag, 
     setSaving(true)
     setError(null)
     try {
-      await onSave(title.trim(), content.trim(), selectedTags)
+      await onSave(title.trim(), content.trim(), selectedTags, pendingFiles)
     } catch (err) {
       setError(err.message ?? 'Failed to save note.')
       setSaving(false)
@@ -84,6 +117,51 @@ export default function NoteEditor({ initial, allUserTags, onSave, onCreateTag, 
     } catch (err) {
       setError(err.message ?? 'Failed to create tag.')
     }
+  }
+
+  // File picker handler — lives in the event handler, not a useEffect, because
+  // this is a direct response to a user interaction (rerender-move-effect-to-event).
+  function handleFileChange(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Synchronous validation BEFORE any async work — fast, no network call
+    // needed (async-cheap-condition-before-await rule).
+    if (!ALLOWED_TYPES.has(file.type)) {
+      setUploadError('Unsupported file type. Allowed: JPEG, PNG, WebP, GIF, PDF.')
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+    if (file.size > MAX_BYTES) {
+      setUploadError(`File must be under ${MAX_BYTES / 1024 / 1024} MB.`)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+
+    setUploadError(null)
+
+    if (noteId !== null) {
+      // Edit mode: upload immediately via useTransition so isPending is
+      // managed automatically (rendering-usetransition-loading rule).
+      startUpload(async () => {
+        try {
+          await onAttachFile(file)
+        } catch (err) {
+          setUploadError(err.message ?? 'Upload failed.')
+        }
+      })
+    } else {
+      // New note mode: queue the file; NoteList.handleCreate will upload it
+      // after the note row is created and we have a note id.
+      setPendingFiles(curr => [...curr, file])
+    }
+
+    // Reset so picking the same file again fires onChange.
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  function handleRemovePendingFile(index) {
+    setPendingFiles(curr => curr.filter((_, i) => i !== index))
   }
 
   // -- Render --
@@ -186,6 +264,62 @@ export default function NoteEditor({ initial, allUserTags, onSave, onCreateTag, 
           {error !== null ? (
             <p className="editor-error" role="alert">{error}</p>
           ) : null}
+
+          {/* ── Attachments section ───────────────────────────────────── */}
+          <div className="field">
+            <label>Attachments</label>
+
+            {/* Existing (committed) attachments — all rendered as uniform
+                editor rows via AttachmentPreview's editor mode. */}
+            {noteAttachments.length > 0 ? (
+              <div className="attachment-list">
+                {noteAttachments.map(a => (
+                  <AttachmentPreview key={a.id} attachment={a} onDelete={onDeleteAttachment} />
+                ))}
+              </div>
+            ) : null}
+
+            {/* Pending files queued for upload on Save (new-note mode only) */}
+            {pendingFiles.length > 0 ? (
+              <div className="attachment-list attachment-list--pending">
+                {pendingFiles.map((f, i) => (
+                  <div key={i} className="pending-attachment">
+                    <span className="pending-attachment__name">{f.name}</span>
+                    <button
+                      type="button"
+                      className="attachment-preview__delete-btn"
+                      aria-label={`Remove ${f.name}`}
+                      onClick={() => handleRemovePendingFile(i)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Hidden file input — triggered by the button below */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+              onChange={handleFileChange}
+              hidden
+            />
+
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm attach-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading || saving}
+            >
+              {isUploading ? 'Uploading…' : 'Attach file'}
+            </button>
+
+            {uploadError !== null ? (
+              <p className="editor-error" role="alert">{uploadError}</p>
+            ) : null}
+          </div>
 
           <div className="editor-actions">
             <button

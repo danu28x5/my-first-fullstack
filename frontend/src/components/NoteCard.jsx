@@ -1,3 +1,5 @@
+import AttachmentPreview from './AttachmentPreview'
+
 // NoteCard is defined at module top level — not inside NoteList or any other
 // component — so React never sees a new component type on re-render and
 // avoids unnecessary remounts (rerender-no-inline-components).
@@ -31,6 +33,30 @@ export default function NoteCard({ note, isArchiveView, onEdit, onArchive, onUna
         {note.content !== null ? (
           <p className="note-card-content">{note.content}</p>
         ) : null}
+        {/* Attachment strip — read-only thumbnails/icons for cards.
+            Images and PDFs are split into separate sub-rows.
+            Derived from note_attachments during render — no extra state needed
+            (rerender-derived-state-no-effect rule).
+            Optional-chaining guards in case the field is absent on a realtime
+            INSERT before the client queries the join. */}
+        {note.note_attachments?.length > 0 ? (() => {
+          const images = note.note_attachments.filter(a => a.mime_type.startsWith('image/'))
+          const pdfs   = note.note_attachments.filter(a => !a.mime_type.startsWith('image/'))
+          return (
+            <div className="note-card-attachments">
+              {images.length > 0 ? (
+                <div className="note-card-attachments__images">
+                  {images.map(a => <AttachmentPreview key={a.id} attachment={a} />)}
+                </div>
+              ) : null}
+              {pdfs.length > 0 ? (
+                <div className="note-card-attachments__pdfs">
+                  {pdfs.map(a => <AttachmentPreview key={a.id} attachment={a} />)}
+                </div>
+              ) : null}
+            </div>
+          )
+        })() : null}
         {/* Tag pills — shown when the note has at least one tag.
             note_tags may be undefined on create before re-fetch, so optional
             chaining guards the length check (rendering-conditional-render). */}
