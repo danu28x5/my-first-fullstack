@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
@@ -42,6 +42,10 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [displayName, setDisplayName] = useState(/** @type {string | null} */ (null))
   const [profileEditorOpen, setProfileEditorOpen] = useState(false)
   const [showArchive, setShowArchive] = useState(false)
+  // Ref mirrors showArchive so the stable Realtime handler can read the current
+  // view without needing showArchive in its dependency array (which would
+  // tear down and re-create the channel on every tab switch).
+  const showArchiveRef = useRef(showArchive)
   const [allUserTags, setAllUserTags] = useState(/** @type {Tag[]} */ ([]))
   // null = no filter; a tag id = show only notes with that tag
   const [activeTagId, setActiveTagId] = useState(/** @type {number | null} */ (null))
@@ -57,6 +61,82 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     const id = setTimeout(() => setDebouncedQuery(searchQuery), 300)
     return () => clearTimeout(id)
   }, [searchQuery])
+
+  // ── Keep showArchiveRef current whenever the tab switches ────────────────────
+  useEffect(() => { showArchiveRef.current = showArchive }, [showArchive])
+
+  // ── Realtime: subscribe to notes changes for this user ───────────────────────
+  // Depends only on userId — the channel is created once per session, not on
+  // every view toggle. View awareness is provided via showArchiveRef.
+  useEffect(() => {
+    const channel = supabase
+      .channel(`notes:user:${userId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notes', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          // Ignore cross-tab inserts while in the archive view — new notes are
+          // never archived on creation.
+          if (showArchiveRef.current) return
+          /** @type {import('../lib/supabase').NoteWithTags} */
+          const incoming = /** @type {any} */ (payload.new)
+          // Dedup: skip if the same-tab optimistic update already added this note.
+          setNotes(curr => {
+            if (curr.some(n => n.id === incoming.id)) return curr
+            // Realtime delivers the `notes` row only — no join data.
+            const noteWithTags = { ...incoming, note_tags: [] }
+            return [...curr, noteWithTags].sort(pinSort)
+          })
+          setTotalCount(curr => curr !== null ? curr + 1 : curr)
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'notes', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          /** @type {import('../lib/supabase').Note} */
+          const updated = /** @type {any} */ (payload.new)
+          setNotes(curr => {
+            const existing = curr.find(n => n.id === updated.id)
+            // Note is not in the current view — nothing to do.
+            if (!existing) return curr
+            // archived_at changed — the note is moving between views.
+            if (existing.archived_at !== updated.archived_at) {
+              // If it was active (archived_at was null) it is leaving the active
+              // view, so decrement totalCount.
+              if (existing.archived_at === null) {
+                setTotalCount(c => c !== null ? c - 1 : c)
+              }
+              return curr.filter(n => n.id !== updated.id)
+            }
+            // Same view — update the row and re-sort (handles pin, title, content).
+            // Preserve note_tags: Realtime does not deliver join data.
+            const reconciled = curr.map(n =>
+              n.id === updated.id ? { ...updated, note_tags: existing.note_tags } : n
+            )
+            return [...reconciled].sort(pinSort)
+          })
+        },
+      )
+      .on(
+        'postgres_changes',
+        // REPLICA IDENTITY FULL ensures payload.old contains user_id and
+        // archived_at so the filter and totalCount logic work correctly.
+        { event: 'DELETE', schema: 'public', table: 'notes', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          /** @type {import('../lib/supabase').Note} */
+          const deleted = /** @type {any} */ (payload.old)
+          setNotes(curr => curr.filter(n => n.id !== deleted.id))
+          // Decrement totalCount only when an active (non-archived) note is deleted.
+          if (deleted.archived_at === null) {
+            setTotalCount(curr => curr !== null ? curr - 1 : curr)
+          }
+        },
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [userId])
 
   // ── Fetch: profile + tags (once on mount, parallel) ─────────────────────────
   // Promise.all fires both requests simultaneously — one round trip instead of
