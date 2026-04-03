@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import AvatarImage from './AvatarImage'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
 import ProfileEditor from './ProfileEditor'
@@ -40,6 +41,11 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     /** @type {import('../lib/supabase').Note | 'new' | null} */ (null),
   )
   const [displayName, setDisplayName] = useState(/** @type {string | null} */ (null))
+  // avatarPath: the raw storage path stored in the DB (e.g. "uuid/avatar.png").
+  // avatarSignedUrl: a time-limited signed URL generated from that path at
+  // display time — never persisted to the database.
+  const [avatarPath, setAvatarPath] = useState(/** @type {string | null} */ (null))
+  const [avatarSignedUrl, setAvatarSignedUrl] = useState(/** @type {string | null} */ (null))
   const [profileEditorOpen, setProfileEditorOpen] = useState(false)
   const [showArchive, setShowArchive] = useState(false)
   // Ref mirrors showArchive so the stable Realtime handler can read the current
@@ -144,18 +150,30 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
   // ── Fetch: profile + tags (once on mount, parallel) ─────────────────────────
   // Promise.all fires both requests simultaneously — one round trip instead of
-  // two sequential ones (async-parallel).
+  // two sequential ones (async-parallel). The signed URL fetch is sequential
+  // because it depends on the avatar_path from the profile query
+  // (async-defer-await: await only where the value is first needed).
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([
-      supabase.from('users').select('display_name').eq('id', userId).single(),
-      supabase.from('tags').select('id, name').order('name'),
-    ]).then(([{ data: profile }, { data: tags }]) => {
+    async function fetchProfileAndTags() {
+      const [{ data: profile }, { data: tags }] = await Promise.all([
+        supabase.from('users').select('display_name, avatar_path').eq('id', userId).single(),
+        supabase.from('tags').select('id, name').order('name'),
+      ])
       if (cancelled) return
       setDisplayName(profile?.display_name ?? null)
       setAllUserTags(tags ?? [])
-    })
+      const path = profile?.avatar_path ?? null
+      setAvatarPath(path)
+      if (path) {
+        const { data: urlData } = await supabase.storage
+          .from('avatars')
+          .createSignedUrl(path, 3600)
+        if (!cancelled) setAvatarSignedUrl(urlData?.signedUrl ?? null)
+      }
+    }
+    fetchProfileAndTags()
     return () => { cancelled = true }
   }, [])
 
@@ -358,6 +376,16 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     // Update header immediately without a re-fetch (rerender-functional-setstate).
     setDisplayName(name)
     setProfileEditorOpen(false)
+    setToast('Profile saved')
+  }, [])
+
+  // Called by ProfileEditor after a successful avatar upload + DB write.
+  // Generates a fresh signed URL from the saved path and updates state so
+  // the header avatar refreshes immediately (rerender-move-effect-to-event).
+  const handleAvatarSave = useCallback(async (path) => {
+    setAvatarPath(path)
+    const { data } = await supabase.storage.from('avatars').createSignedUrl(path, 3600)
+    setAvatarSignedUrl(data?.signedUrl ?? null)
   }, [])
 
   // ── Archive / Unarchive / Delete ──────────────────────────────────────────────────────
@@ -474,6 +502,16 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           </button>
         </div>
         <div className="notes-header-actions">
+          {/* key=avatarSignedUrl resets AvatarImage's imgError state when the
+              URL changes — keyed-reset pattern avoids an effect for derived
+              error state (rerender-derived-state-no-effect). */}
+          <AvatarImage
+            key={avatarSignedUrl}
+            signedUrl={avatarSignedUrl}
+            displayName={displayName}
+            email={userEmail}
+            size="sm"
+          />
           <span className="notes-user">{displayName ?? userEmail}</span>
           <button
             type="button"
@@ -593,7 +631,10 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       {profileEditorOpen ? (
         <ProfileEditor
           initialName={displayName ?? userEmail ?? ''}
+          userId={userId}
+          initialAvatarSignedUrl={avatarSignedUrl}
           onSave={handleProfileSave}
+          onAvatarSave={handleAvatarSave}
           onCancel={() => setProfileEditorOpen(false)}
         />
       ) : null}

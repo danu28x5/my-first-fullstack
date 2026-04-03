@@ -690,3 +690,104 @@
   to   { opacity: 0; transform: translateX(-50%) translateY(-0.4rem); }
 }
 
+/* ============================================================
+   Avatar (shared: header badge + profile-editor preview)
+   ============================================================ */
+
+/* Base circle — used for both <img> and the initials placeholder <div>. */
+.avatar {
+  border-radius: 50%;
+  object-fit: cover;   /* for <img> */
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Size variants */
+.avatar--sm {
+  width: 32px;
+  height: 32px;
+  font-size: 0.7rem;
+}
+
+.avatar--lg {
+  width: 80px;
+  height: 80px;
+  font-size: 1.5rem;
+}
+
+/* Initials placeholder */
+.avatar--placeholder {
+  background: rgba(51, 138, 1, 0.12);
+  color: var(--accent);
+  border: 2px solid rgba(51, 138, 1, 0.25);
+  font-weight: 600;
+  user-select: none;
+  letter-spacing: 0.03em;
+}
+
+/* ============================================================
+   Avatar upload (inside ProfileEditor)
+   ============================================================ */
+
+.avatar-upload-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Relative container so the overlays can be positioned on top of the avatar. */
+.avatar-upload-wrapper {
+  position: relative;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+/* Semi-transparent overlay with camera icon — visible on hover only.
+   The :focus-within selector keeps the overlay visible when keyboard-focused. */
+.avatar-upload-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.avatar-upload-wrapper:hover .avatar-upload-overlay,
+.avatar-upload-wrapper:focus-within .avatar-upload-overlay {
+  opacity: 1;
+}
+
+/* Spinner overlay — replaces the camera overlay while uploading. */
+.avatar-spinner-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* CSS border-spinner */
+.avatar-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: avatar-spin 0.7s linear infinite;
+}
+
+@keyframes avatar-spin {
+  to { transform: rotate(360deg); }
+}
+
