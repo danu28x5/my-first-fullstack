@@ -8,6 +8,8 @@ import Toast from './Toast'
 /** @typedef {import('../lib/supabase').NoteWithTags} NoteWithTags */
 /** @typedef {import('../lib/supabase').Tag} Tag */
 
+const PAGE_SIZE = 10
+
 // Stable sort comparator: pinned first, then newest first by created_at.
 // Defined at module level so it is never recreated on re-render and can be
 // shared by handleCreate and handleTogglePin (rerender-no-inline-components).
@@ -28,6 +30,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [notes, setNotes] = useState(/** @type {import('../lib/supabase').Note[]} */ ([]))
   const [fetchError, setFetchError] = useState(/** @type {string | null} */ (null))
   const [loadingNotes, setLoadingNotes] = useState(true)
+  // totalCount: number of active notes on the server (null when not paginating, e.g. search/archive)
+  const [totalCount, setTotalCount] = useState(/** @type {number | null} */ (null))
+  const [loadingMore, setLoadingMore] = useState(false)
   // editingNote: null  → editor hidden
   //              'new' → creating a new note
   //              Note  → editing that note
@@ -76,6 +81,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     let cancelled = false
     setLoadingNotes(true)
     setFetchError(null)
+    setTotalCount(null)
 
     async function fetchNotes() {
       let query
@@ -101,18 +107,22 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       } else {
         query = supabase
           .from('notes')
-          .select('*, note_tags(tags(id, name))')
+          .select('*, note_tags(tags(id, name))', { count: 'exact' })
           .is('archived_at', null)
           .order('is_pinned', { ascending: false })
           .order('created_at', { ascending: false })
+          .range(0, PAGE_SIZE - 1)
       }
 
-      const { data, error } = await query
+      const { data, error, count } = await query
       if (cancelled) return
       if (error) {
         setFetchError(error.message)
       } else {
         setNotes(data ?? [])
+        // count is only set for the active-notes branch (count: 'exact' is only
+        // requested there). For search/archive, count is undefined → null.
+        setTotalCount(count ?? null)
       }
       setLoadingNotes(false)
     }
@@ -146,6 +156,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     /** @type {NoteWithTags} */
     const noteWithTags = { ...data, note_tags: selectedTags.map(t => ({ tags: t })) }
     setNotes(curr => [...curr, noteWithTags].sort(pinSort))
+    setTotalCount(curr => curr !== null ? curr + 1 : curr)
     setEditingNote(null)
     setToast('Note created')
   }, [])
@@ -258,6 +269,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     if (error) { alert(`Archive failed: ${error.message}`); return }
     // Remove from active view immediately (rerender-functional-setstate).
     setNotes(curr => curr.filter(n => n.id !== id))
+    setTotalCount(curr => curr !== null ? curr - 1 : curr)
     setToast('Note archived')
   }, [])
 
@@ -280,6 +292,26 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     setToast('Note deleted')
   }, [])
 
+  // ── Load more ─────────────────────────────────────────────────────────────
+
+  const handleLoadMore = useCallback(async () => {
+    setLoadingMore(true)
+    // Read offset synchronously before the async call — needed for .range().
+    // Can't use functional setState here because the value drives the network
+    // request itself, not just a state update.
+    const offset = notes.length
+    const { data, error } = await supabase
+      .from('notes')
+      .select('*, note_tags(tags(id, name))')
+      .is('archived_at', null)
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
+    setLoadingMore(false)
+    if (error) { setToast(`Could not load more: ${error.message}`); return }
+    setNotes(curr => [...curr, ...(data ?? [])])
+  }, [notes.length])
+
   // ── Derived ──────────────────────────────────────────────────────────────
 
   // `isEditorOpen` is derived from `editingNote` during render — no separate
@@ -287,6 +319,10 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const isEditorOpen = editingNote !== null
   // isSearching is derived from debouncedQuery during render.
   const isSearching = debouncedQuery.length > 0
+  // hasMore: true only when paginated active notes have more server-side rows.
+  // totalCount is null for search/archive, so hasMore is safely false in those
+  // views without any extra checks (rerender-derived-state-no-effect).
+  const hasMore = totalCount !== null && notes.length < totalCount
   const editorInitial = editingNote === 'new' ? null : editingNote
 
   const onSave = editingNote === 'new' ? handleCreate : handleUpdate
@@ -394,20 +430,34 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
               : showArchive ? 'No archived notes.' : 'No notes yet. Create your first one!'}
           </p>
         ) : (
-          <div className="notes-grid">
-            {visibleNotes.map(note => (
-              <NoteCard
-                key={note.id}
-                note={note}
-                isArchiveView={showArchive}
-                onEdit={setEditingNote}
-                onArchive={handleArchive}
-                onUnarchive={handleUnarchive}
-                onDeletePermanently={handleDeletePermanently}
-                onTogglePin={handleTogglePin}
-              />
-            ))}
-          </div>
+          <>
+            <div className="notes-grid">
+              {visibleNotes.map(note => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  isArchiveView={showArchive}
+                  onEdit={setEditingNote}
+                  onArchive={handleArchive}
+                  onUnarchive={handleUnarchive}
+                  onDeletePermanently={handleDeletePermanently}
+                  onTogglePin={handleTogglePin}
+                />
+              ))}
+            </div>
+            {hasMore ? (
+              <div className="load-more-bar">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? 'Loading\u2026' : 'Load more'}
+                </button>
+              </div>
+            ) : null}
+          </>
         )}
       </main>
 
