@@ -4,11 +4,14 @@ import AvatarImage from './AvatarImage'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
 import ProfileEditor from './ProfileEditor'
+import SharePanel from './SharePanel'
 import Toast from './Toast'
-// NoteWithTags, Tag, and NoteAttachmentPreview are JSDoc-only imports — no runtime cost.
+// JSDoc-only typedef imports — no runtime cost.
 /** @typedef {import('../lib/supabase').NoteWithTags} NoteWithTags */
 /** @typedef {import('../lib/supabase').Tag} Tag */
 /** @typedef {import('../lib/supabase').NoteAttachmentPreview} NoteAttachmentPreview */
+/** @typedef {import('../lib/supabase').SharedNoteRow} SharedNoteRow */
+/** @typedef {import('../lib/supabase').SharePermission} SharePermission */
 
 const PAGE_SIZE = 10
 
@@ -33,6 +36,10 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [fetchError, setFetchError] = useState(/** @type {string | null} */ (null))
   const [loadingNotes, setLoadingNotes] = useState(true)
   // totalCount: number of active notes on the server (null when not paginating, e.g. search/archive)
+  // activeView replaces the old showArchive: boolean.
+  //   'notes'    → active notes (was !showArchive)
+  //   'archived' → archived notes (was showArchive)
+  //   'shared'   → notes shared with this user by others
   const [totalCount, setTotalCount] = useState(/** @type {number | null} */ (null))
   const [loadingMore, setLoadingMore] = useState(false)
   // editingNote: null  → editor hidden
@@ -48,11 +55,16 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [avatarPath, setAvatarPath] = useState(/** @type {string | null} */ (null))
   const [avatarSignedUrl, setAvatarSignedUrl] = useState(/** @type {string | null} */ (null))
   const [profileEditorOpen, setProfileEditorOpen] = useState(false)
-  const [showArchive, setShowArchive] = useState(false)
-  // Ref mirrors showArchive so the stable Realtime handler can read the current
-  // view without needing showArchive in its dependency array (which would
+  // activeView replaces the old showArchive boolean — three-state navigation.
+  const [activeView, setActiveView] = useState(/** @type {'notes'|'archived'|'shared'} */ ('notes'))
+  // Ref mirrors activeView so the stable Realtime handler can read the current
+  // view without needing activeView in its dependency array (which would
   // tear down and re-create the channel on every tab switch).
-  const showArchiveRef = useRef(showArchive)
+  const activeViewRef = useRef(activeView)
+  // Tracks IDs inserted by this tab so the Realtime INSERT handler can skip
+  // them — prevents the double-add / double-totalCount-increment race condition
+  // where the Realtime event fires while handleCreate is awaiting Promise.all.
+  const optimisticInsertIds = useRef(/** @type {Set<string>} */ (new Set()))
   const [allUserTags, setAllUserTags] = useState(/** @type {Tag[]} */ ([]))
   // null = no filter; a tag id = show only notes with that tag
   const [activeTagId, setActiveTagId] = useState(/** @type {number | null} */ (null))
@@ -63,18 +75,30 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
 
+  // ── Shared notes state ───────────────────────────────────────────────────
+  const [sharedNotes, setSharedNotes] = useState(/** @type {SharedNoteRow[]} */ ([]))
+  const [sharedNotesLoading, setSharedNotesLoading] = useState(false)
+  // ownerAvatarUrls: maps avatar_path → signed URL for note owners in the shared view.
+  const [ownerAvatarUrls, setOwnerAvatarUrls] = useState(/** @type {Map<string,string>} */ (new Map()))
+  // sharePanelNote: which owner note currently has the SharePanel open.
+  const [sharePanelNote, setSharePanelNote] = useState(/** @type {NoteWithTags | null} */ (null))
+  // Ref mirrors sharedNotes' note IDs for O(1) lookup in the Realtime UPDATE
+  // handler without including sharedNotes in its dependency array.
+  // (same pattern as activeViewRef / showArchiveRef in existing code)
+  const sharedNoteIdsRef = useRef(/** @type {Set<number>} */ (new Set()))
+
   // ── Debounce: update debouncedQuery 300ms after the user stops typing ────────
   useEffect(() => {
     const id = setTimeout(() => setDebouncedQuery(searchQuery), 300)
     return () => clearTimeout(id)
   }, [searchQuery])
 
-  // ── Keep showArchiveRef current whenever the tab switches ────────────────────
-  useEffect(() => { showArchiveRef.current = showArchive }, [showArchive])
+  // ── Keep activeViewRef current whenever the tab switches ──────────────────────
+  useEffect(() => { activeViewRef.current = activeView }, [activeView])
 
   // ── Realtime: subscribe to notes changes for this user ───────────────────────
   // Depends only on userId — the channel is created once per session, not on
-  // every view toggle. View awareness is provided via showArchiveRef.
+  // every view toggle. View awareness is provided via activeViewRef.
   useEffect(() => {
     const channel = supabase
       .channel(`notes:user:${userId}`)
@@ -82,16 +106,21 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'notes', filter: `user_id=eq.${userId}` },
         (payload) => {
-          // Ignore cross-tab inserts while in the archive view — new notes are
-          // never archived on creation.
-          if (showArchiveRef.current) return
+          // Ignore cross-tab inserts while not in the notes view — new notes are
+          // never archived on creation and don't belong in the shared view.
+          if (activeViewRef.current !== 'notes') return
           /** @type {import('../lib/supabase').NoteWithTags} */
           const incoming = /** @type {any} */ (payload.new)
-          // Dedup: skip if the same-tab optimistic update already added this note.
-          // totalCount is incremented inside the updater so it only fires when
-          // the note is genuinely new — prevents double-increment with the
-          // optimistic update in handleCreate, which would cause hasMore to
-          // become true again after all notes are already loaded.
+          // Same-tab optimistic insert: handleCreate registered the ID in
+          // optimisticInsertIds synchronously before its next await, so the
+          // ref is always set before this Realtime macro-task fires.
+          // Consuming (delete) the entry ensures a cross-tab second creation of
+          // the same note still goes through on the next event.
+          if (optimisticInsertIds.current.has(incoming.id)) {
+            optimisticInsertIds.current.delete(incoming.id)
+            return
+          }
+          // Cross-tab insert — add it and update the count.
           setNotes(curr => {
             if (curr.some(n => n.id === incoming.id)) return curr
             // Realtime delivers the `notes` row only — no join data.
@@ -151,6 +180,109 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     return () => { supabase.removeChannel(channel) }
   }, [userId])
 
+  // ── Realtime Channel 1: note_shares rows for this recipient ─────────────────
+  // Fires when someone shares a note with us (INSERT) or revokes (DELETE).
+  // REPLICA IDENTITY FULL on note_shares ensures DELETE payload.old carries
+  // shared_with_user_id so the server-side filter works.
+  useEffect(() => {
+    const channel = supabase
+      .channel(`note_shares:recipient:${userId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'note_shares', filter: `shared_with_user_id=eq.${userId}` },
+        async (payload) => {
+          const incoming = /** @type {any} */ (payload.new)
+          // Fetch the full row with note + owner profile.
+          const { data } = await supabase
+            .from('note_shares')
+            .select('id, note_id, owner_id, permission, created_at, notes(*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at), users(display_name, avatar_path))')
+            .eq('id', incoming.id)
+            .single()
+          if (!data) return
+          const row = /** @type {SharedNoteRow} */ (/** @type {any} */ (data))
+          const avatarPath = row.notes?.users?.avatar_path
+          if (avatarPath) {
+            const { data: u } = await supabase.storage.from('avatars').createSignedUrl(avatarPath, 3600)
+            if (u?.signedUrl) setOwnerAvatarUrls(prev => new Map([...prev, [avatarPath, u.signedUrl]]))
+          }
+          setSharedNotes(curr => {
+            if (curr.some(r => r.id === row.id)) return curr
+            return [row, ...curr]
+          })
+          sharedNoteIdsRef.current.add(row.note_id)
+          // Notify the recipient that a new note has been shared with them.
+          setToast(`${row.notes?.users?.display_name ?? 'Someone'} shared a note with you`)
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'note_shares', filter: `shared_with_user_id=eq.${userId}` },
+        (payload) => {
+          const updated = /** @type {any} */ (payload.new)
+          // Number() coerces WAL bigint payloads that may arrive as strings.
+          const noteId = Number(updated.note_id)
+          // Update the permission badge in place — no flash, no reorder.
+          setSharedNotes(curr => curr.map(r =>
+            r.note_id === noteId ? { ...r, permission: updated.permission } : r
+          ))
+        },
+      )
+      .on(
+        'postgres_changes',
+        // Server-side filter is applied against old_record for DELETE events —
+        // REPLICA IDENTITY FULL makes all columns available in the WAL record,
+        // so this filter drives event delivery to the recipient correctly.
+        // The original removal was wrong: the real bug was a type mismatch —
+        // WAL delivers bigint as a JS string ("42") while r.note_id from fetch
+        // is a number (42), so "42" !== 42 meant the note was never removed.
+        { event: 'DELETE', schema: 'public', table: 'note_shares', filter: `shared_with_user_id=eq.${userId}` },
+        (payload) => {
+          const deleted = /** @type {any} */ (payload.old)
+          // Number() fixes the WAL string→number type mismatch for bigint columns.
+          const noteId = Number(deleted.note_id)
+          setSharedNotes(curr => curr.filter(r => r.note_id !== noteId))
+          sharedNoteIdsRef.current.delete(noteId)
+        },
+      )
+      .on('broadcast', { event: 'note_revoked' }, (payload) => {
+        // Fired by SharePanel.handleRevoke after a successful hard-delete.
+        // postgres_changes DELETE events are silently dropped for the recipient
+        // because Supabase's RLS auth check runs against the live table — after
+        // the delete the row is gone, the check finds nothing and fails, so the
+        // event never reaches the client. Broadcast bypasses table-level RLS
+        // entirely and is the reliable revocation signal.
+        const noteId = Number(payload.payload?.note_id)
+        if (!noteId) return
+        setSharedNotes(curr => curr.filter(r => r.note_id !== noteId))
+        sharedNoteIdsRef.current.delete(noteId)
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [userId])
+
+  // ── Realtime Channel 2: content updates on notes shared with this user ───────
+  // No server-side filter is possible (set is dynamic); gate client-side via
+  // sharedNoteIdsRef — same stable-ref pattern as activeViewRef.
+  useEffect(() => {
+    const channel = supabase
+      .channel(`notes:shared:${userId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'notes' },
+        (payload) => {
+          const updated = /** @type {any} */ (payload.new)
+          if (!sharedNoteIdsRef.current.has(updated.id)) return
+          setSharedNotes(curr => curr.map(r => {
+            if (r.note_id !== updated.id) return r
+            const existing = r.notes
+            return { ...r, notes: existing ? { ...updated, note_tags: existing.note_tags, note_attachments: existing.note_attachments, users: existing.users } : null }
+          }))
+        },
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [userId])
+
   // ── Fetch: profile + tags (once on mount, parallel) ─────────────────────────
   // Promise.all fires both requests simultaneously — one round trip instead of
   // two sequential ones (async-parallel). The signed URL fetch is sequential
@@ -183,12 +315,15 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // ── Fetch: notes (re-runs when view or debounced search query changes) ────────
 
   useEffect(() => {
+    // Don't fetch own notes while on the shared tab — a separate fetch handles that.
+    if (activeView === 'shared') return
     let cancelled = false
     setLoadingNotes(true)
     setFetchError(null)
     setTotalCount(null)
 
     async function fetchNotes() {
+      const isArchived = activeView === 'archived'
       let query
       if (debouncedQuery.length > 0) {
         // Full-text search via the stored `fts` tsvector column.
@@ -196,23 +331,26 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         query = supabase
           .from('notes')
           .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)')
+          .eq('user_id', userId)
           .textSearch('fts', debouncedQuery, { type: 'plain', config: 'english' })
-        if (showArchive) {
+        if (isArchived) {
           query = query.not('archived_at', 'is', null)
         } else {
           query = query.is('archived_at', null)
         }
         // Results returned in relevance order from Postgres — no .order() needed.
-      } else if (showArchive) {
+      } else if (isArchived) {
         query = supabase
           .from('notes')
           .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)')
+          .eq('user_id', userId)
           .not('archived_at', 'is', null)
           .order('archived_at', { ascending: false })
       } else {
         query = supabase
           .from('notes')
           .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)', { count: 'exact' })
+          .eq('user_id', userId)
           .is('archived_at', null)
           .order('is_pinned', { ascending: false })
           .order('created_at', { ascending: false })
@@ -234,7 +372,57 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
 
     fetchNotes()
     return () => { cancelled = true }
-  }, [showArchive, debouncedQuery])
+  }, [activeView, debouncedQuery])
+
+  // ── Fetch: shared notes ────────────────────────────────────────────────────
+  // Extracted as useCallback so it can be called both when the 'shared' tab
+  // activates and when the page regains visibility. Supabase Realtime's
+  // RLS auth check for DELETE events queries the *live* table — after a hard
+  // delete the row is gone, so the check fails and the event is never
+  // delivered to the recipient. The visibilitychange refetch below catches
+  // any revocations that occurred while the tab was backgrounded.
+  const fetchSharedNotes = useCallback(async () => {
+    setSharedNotesLoading(true)
+    const { data, error } = await supabase
+      .from('note_shares')
+      .select('id, note_id, owner_id, permission, created_at, notes(*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at), users(display_name, avatar_path))')
+      .eq('shared_with_user_id', userId)
+      .order('created_at', { ascending: false })
+    if (error) { setSharedNotesLoading(false); return }
+    const rows = /** @type {SharedNoteRow[]} */ (data ?? [])
+    setSharedNotes(rows)
+    sharedNoteIdsRef.current = new Set(rows.map(r => r.note_id))
+    // Batch-resolve owner avatar signed URLs in parallel (async-parallel rule).
+    const uniquePaths = [...new Set(rows.map(r => r.notes?.users?.avatar_path).filter(Boolean))]
+    const urlEntries = await Promise.all(
+      uniquePaths.map(async path => {
+        const { data: u } = await supabase.storage.from('avatars').createSignedUrl(path, 3600)
+        return /** @type {[string, string]} */ ([path, u?.signedUrl ?? ''])
+      })
+    )
+    setOwnerAvatarUrls(new Map(urlEntries.filter(([, url]) => url)))
+    setSharedNotesLoading(false)
+  }, [userId])
+
+  // Runs when the 'shared' tab is activated.
+  useEffect(() => {
+    if (activeView !== 'shared') return
+    fetchSharedNotes()
+  }, [activeView, fetchSharedNotes])
+
+  // Refetch when the page regains visibility so revocations that happened
+  // while this tab was backgrounded are reflected immediately.
+  // Uses activeViewRef (stable ref) to avoid re-registering on every tab
+  // switch (same pattern as the Realtime handlers above).
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.visibilityState === 'visible' && activeViewRef.current === 'shared') {
+        fetchSharedNotes()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => { document.removeEventListener('visibilitychange', handleVisibility) }
+  }, [fetchSharedNotes])
 
   // ── Create ───────────────────────────────────────────────────────────────
 
@@ -246,6 +434,13 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       .single()
 
     if (error) throw error
+
+    // Register the new ID synchronously before the next await so the Realtime
+    // INSERT handler (a macro-task) can detect this same-tab creation and skip
+    // its duplicate-add logic.  The ref is always set before the WebSocket
+    // event fires because JS delivers macro-tasks only after the microtask
+    // queue drains, and await Promise.all (below) is still in this microtask.
+    optimisticInsertIds.current.add(data.id)
 
     // Build file upload descriptors — paths are computed before the upload
     // so they are available for both the storage call and the metadata insert.
@@ -554,6 +749,12 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     setToast('Note deleted')
   }, [])
 
+  // ── Share panel ───────────────────────────────────────────────────────────
+
+  const handleOpenSharePanel = useCallback((note) => {
+    setSharePanelNote(note)
+  }, [])
+
   // ── Load more ─────────────────────────────────────────────────────────────
 
   const handleLoadMore = useCallback(async () => {
@@ -565,6 +766,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     const { data, error } = await supabase
       .from('notes')
       .select('*, note_tags(tags(id, name)), note_attachments(id, file_name, storage_path, mime_type, byte_size, created_at)')
+      .eq('user_id', userId)
       .is('archived_at', null)
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
@@ -604,17 +806,24 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         <div className="notes-tabs">
           <button
             type="button"
-            className={`btn notes-tab${!showArchive ? ' notes-tab--active' : ''}`}
-            onClick={() => setShowArchive(false)}
+            className={`btn notes-tab${activeView === 'notes' ? ' notes-tab--active' : ''}`}
+            onClick={() => setActiveView('notes')}
           >
             Notes
           </button>
           <button
             type="button"
-            className={`btn notes-tab${showArchive ? ' notes-tab--active' : ''}`}
-            onClick={() => { setShowArchive(true); setActiveTagId(null) }}
+            className={`btn notes-tab${activeView === 'archived' ? ' notes-tab--active' : ''}`}
+            onClick={() => { setActiveView('archived'); setActiveTagId(null) }}
           >
             Archived
+          </button>
+          <button
+            type="button"
+            className={`btn notes-tab${activeView === 'shared' ? ' notes-tab--active' : ''}`}
+            onClick={() => { setActiveView('shared'); setActiveTagId(null) }}
+          >
+            Shared with me
           </button>
         </div>
         <div className="notes-header-actions">
@@ -637,8 +846,8 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
             />
             <span className="notes-user">{displayName ?? userEmail}</span>
           </button>
-          {/* + New note hidden in archive view (rendering-conditional-render). */}
-          {!showArchive ? (
+          {/* + New note only in the active notes view (rendering-conditional-render). */}
+          {activeView === 'notes' ? (
             <button
               type="button"
               className="btn btn-secondary"
@@ -666,7 +875,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           Search bar is pushed to the right via margin-left: auto.
           (rendering-conditional-render: ternary, not &&) */}
       <div className="tag-filter-bar">
-        {!showArchive && allUserTags.length > 0 ? allUserTags.map(tag => (
+        {activeView === 'notes' && allUserTags.length > 0 ? allUserTags.map(tag => (
           <button
             key={tag.id}
             type="button"
@@ -689,48 +898,88 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       </div>
 
       <main className="notes-main">
-        {/* loadingNotes is boolean — && is safe here because the left side
-            is a boolean, not a number (rendering-conditional-render applies
-            to numeric/falsy-value conditions; boolean && is fine). */}
-        {loadingNotes ? (
-          <p className="notes-status">Loading…</p>
-        ) : fetchError !== null ? (
-          <p className="notes-status notes-error" role="alert">{fetchError}</p>
-        ) : notes.length === 0 ? (
-          <p className="notes-status">
-            {isSearching
-              ? `No results for \u201c${debouncedQuery}\u201d.`
-              : showArchive ? 'No archived notes.' : 'No notes yet. Create your first one!'}
-          </p>
-        ) : (
-          <>
+        {activeView === 'shared' ? (
+          /* ── Shared with me view ─────────────────────────────────────── */
+          sharedNotesLoading ? (
+            <p className="notes-status">Loading…</p>
+          ) : sharedNotes.length === 0 ? (
+            <p className="notes-status">No notes have been shared with you yet.</p>
+          ) : (
             <div className="notes-grid">
-              {visibleNotes.map(note => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  isArchiveView={showArchive}
-                  onEdit={setEditingNote}
-                  onArchive={handleArchive}
-                  onUnarchive={handleUnarchive}
-                  onDeletePermanently={handleDeletePermanently}
-                  onTogglePin={handleTogglePin}
-                />
-              ))}
+              {sharedNotes.map(row => {
+                const note = row.notes
+                if (!note) return null
+                const avatarUrl = note.users?.avatar_path
+                  ? (ownerAvatarUrls.get(note.users.avatar_path) ?? null)
+                  : null
+                return (
+                  <NoteCard
+                    key={row.id}
+                    note={note}
+                    isArchiveView={false}
+                    isSharedView
+                    permission={row.permission}
+                    ownerInfo={note.users ? { displayName: note.users.display_name, avatarSignedUrl: avatarUrl } : null}
+                    onEdit={row.permission === 'edit' ? setEditingNote : undefined}
+                    onArchive={undefined}
+                    onUnarchive={undefined}
+                    onDeletePermanently={undefined}
+                    onTogglePin={undefined}
+                    onShare={undefined}
+                  />
+                )
+              })}
             </div>
-            {hasMore ? (
-              <div className="load-more-bar">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={handleLoadMore}
-                  disabled={loadingMore}
-                >
-                  {loadingMore ? 'Loading\u2026' : 'Load more'}
-                </button>
+          )
+        ) : (
+          /* ── Own notes / archived view ───────────────────────────────── */
+          /* loadingNotes is boolean — && is safe here because the left side
+             is a boolean, not a number (rendering-conditional-render applies
+             to numeric/falsy-value conditions; boolean && is fine). */
+          loadingNotes ? (
+            <p className="notes-status">Loading…</p>
+          ) : fetchError !== null ? (
+            <p className="notes-status notes-error" role="alert">{fetchError}</p>
+          ) : notes.length === 0 ? (
+            <p className="notes-status">
+              {isSearching
+                ? `No results for \u201c${debouncedQuery}\u201d.`
+                : activeView === 'archived' ? 'No archived notes.' : 'No notes yet. Create your first one!'}
+            </p>
+          ) : (
+            <>
+              <div className="notes-grid">
+                {visibleNotes.map(note => (
+                  <NoteCard
+                    key={note.id}
+                    note={note}
+                    isArchiveView={activeView === 'archived'}
+                    isSharedView={false}
+                    permission={null}
+                    ownerInfo={null}
+                    onEdit={setEditingNote}
+                    onArchive={handleArchive}
+                    onUnarchive={handleUnarchive}
+                    onDeletePermanently={handleDeletePermanently}
+                    onTogglePin={handleTogglePin}
+                    onShare={handleOpenSharePanel}
+                  />
+                ))}
               </div>
-            ) : null}
-          </>
+              {hasMore ? (
+                <div className="load-more-bar">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleLoadMore}
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? 'Loading\u2026' : 'Load more'}
+                  </button>
+                </div>
+              ) : null}
+            </>
+          )
         )}
       </main>
 
@@ -749,6 +998,15 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
             : (notes.find(n => n.id === editingNote.id)?.note_attachments ?? [])}
           onAttachFile={handleAttachFile}
           onDeleteAttachment={handleDeleteAttachment}
+        />
+      ) : null}
+      {sharePanelNote !== null ? (
+        <SharePanel
+          noteId={sharePanelNote.id}
+          noteTitle={sharePanelNote.title}
+          userId={userId}
+          onClose={() => setSharePanelNote(null)}
+          onToast={setToast}
         />
       ) : null}
       {profileEditorOpen ? (

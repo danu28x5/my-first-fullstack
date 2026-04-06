@@ -42,3 +42,37 @@ export type NoteWithTags = Note & {
   note_tags: { tags: Pick<Tag, 'id' | 'name'> | null }[]
   note_attachments: NoteAttachmentPreview[]
 }
+
+// ── Note sharing ─────────────────────────────────────────────────────────────
+
+export type SharePermission = Database['public']['Enums']['share_permission']
+
+export type NoteShare = Database['public']['Tables']['note_shares']['Row']
+
+// A note row enriched with the owner's public profile — used in the "Shared
+// with me" list where each note is joined through note_shares → notes → users.
+export type SharedNote = NoteWithTags & {
+  users: { display_name: string | null; avatar_path: string | null } | null
+}
+
+// The shape returned when querying note_shares with the nested note join:
+//   .select('id, note_id, owner_id, permission, created_at, notes(..., users(display_name, avatar_path))')
+export type SharedNoteRow = {
+  id: number
+  note_id: number
+  owner_id: string
+  permission: SharePermission
+  created_at: string
+  notes: SharedNote | null
+}
+
+// The shape returned when querying note_shares for the SharePanel (existing
+// shares on a note the current user owns):
+//   .select('id, shared_with_user_id, permission, created_at, users!note_shares_shared_with_user_id_fkey(display_name)')
+export type SharePanelRow = {
+  id: number
+  shared_with_user_id: string
+  permission: SharePermission
+  created_at: string
+  users: { display_name: string | null } | null
+}
