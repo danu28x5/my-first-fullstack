@@ -61,6 +61,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // view without needing activeView in its dependency array (which would
   // tear down and re-create the channel on every tab switch).
   const activeViewRef = useRef(activeView)
+  // Ref mirrors totalCount so handleTogglePin can read the current count
+  // without it being a dependency of the callback (same pattern as activeViewRef).
+  const totalCountRef = useRef(/** @type {number | null} */ (null))
   // Tracks IDs inserted by this tab so the Realtime INSERT handler can skip
   // them — prevents the double-add / double-totalCount-increment race condition
   // where the Realtime event fires while handleCreate is awaiting Promise.all.
@@ -93,8 +96,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     return () => clearTimeout(id)
   }, [searchQuery])
 
-  // ── Keep activeViewRef current whenever the tab switches ──────────────────────
+  // ── Keep activeViewRef / totalCountRef current ──────────────────────────────
   useEffect(() => { activeViewRef.current = activeView }, [activeView])
+  useEffect(() => { totalCountRef.current = totalCount }, [totalCount])
 
   // ── Realtime: subscribe to notes changes for this user ───────────────────────
   // Depends only on userId — the channel is created once per session, not on
@@ -559,6 +563,18 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       const updated = curr.map(n =>
         n.id === note.id ? { ...n, is_pinned: !note.is_pinned } : n
       )
+      // When unpinning while more pages exist on the server: if this note's
+      // created_at is older than every other loaded note, it belongs beyond
+      // the current page boundary — remove it so Load More fetches it from
+      // the correct offset instead of duplicating it.
+      if (note.is_pinned && totalCountRef.current !== null && curr.length < totalCountRef.current) {
+        const others = curr.filter(n => n.id !== note.id)
+        const sortedOthers = [...others].sort(pinSort)
+        const oldestOther = sortedOthers.at(-1)
+        if (oldestOther && note.created_at < oldestOther.created_at) {
+          return sortedOthers
+        }
+      }
       return [...updated].sort(pinSort)
     })
 
@@ -773,7 +789,10 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
       .range(offset, offset + PAGE_SIZE - 1)
     setLoadingMore(false)
     if (error) { setToast(`Could not load more: ${error.message}`); return }
-    setNotes(curr => [...curr, ...(data ?? [])])
+    setNotes(curr => {
+      const existingIds = new Set(curr.map(n => n.id))
+      return [...curr, ...(data ?? []).filter(n => !existingIds.has(n.id))]
+    })
   }, [notes.length])
 
   // ── Derived ──────────────────────────────────────────────────────────────

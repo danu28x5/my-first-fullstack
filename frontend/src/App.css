@@ -315,6 +315,34 @@
   gap: 1rem;
   transition: box-shadow 0.15s, border-color 0.15s;
   text-align: left;
+  position: relative;
+}
+
+/* Pin icon — top-right corner, icon-only, greyed out until active/hovered */
+.btn-pin-corner {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  padding: 0.15rem 0.25rem;
+  filter: grayscale(1);
+  opacity: 0.25;
+  background: none;
+  border: none;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity 0.15s, filter 0.15s;
+}
+
+.note-card:hover .btn-pin-corner,
+.btn-pin-corner:hover {
+  filter: none;
+  opacity: 0.6;
+}
+
+.btn-pin-corner--active {
+  filter: none !important;
+  opacity: 1 !important;
 }
 
 .note-card:hover {
@@ -352,25 +380,13 @@
 .note-card-date {
   font-size: 0.7rem;
   color: var(--text);
-  display: block;
 }
 
-.note-card-actions {
+/* Footer row: date flush-left, action-menu trigger flush-right */
+.note-card-footer {
   display: flex;
   align-items: center;
-}
-
-.note-card-actions-end {
-  display: flex;
-  gap: 0.6rem;
-  /* margin-left: auto right-aligns the group whether or not the pin
-     button is present (active view has it, archive view does not). */
-  margin-left: auto;
-}
-
-.note-card-actions-end .btn {
-  padding: 0.2rem 0.7rem;
-  font-size: 0.85rem;
+  justify-content: space-between;
 }
 
 /* Pinned modifier — accent top border matches the .auth-card / .editor-card
@@ -379,23 +395,70 @@
   border-top: 3px solid var(--accent);
 }
 
-/* Pin button — grayscale by default, full emoji colour on hover and when pinned.
-   Using filter: grayscale() because CSS `color` has no effect on emoji glyphs. */
-.btn-pin {
-  filter: grayscale(1);
-  opacity: 0.4;
-  padding: 0.14rem 0.3rem;
+/* 3-dots trigger button */
+.btn-menu-trigger {
+  padding: 0.1rem 0.45rem;
+  font-size: 1rem;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  opacity: 0.5;
+  border-radius: 6px;
 }
 
-.btn-pin:hover:not(:disabled) {
-  filter: none;
+.btn-menu-trigger:hover {
   opacity: 1;
-  background: transparent;
+  background: var(--bg-subtle);
 }
 
-.btn-pin--active {
-  filter: none;
-  opacity: 1;
+/* Relative anchor for the absolute dropdown panel */
+.note-card-menu {
+  position: relative;
+}
+
+/* Dropdown panel — opens upward so it doesn't clip below the grid row */
+.note-card-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  min-width: 158px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  z-index: 50;
+  overflow: hidden;
+  padding: 0.25rem 0;
+}
+
+/* Individual action item inside the dropdown */
+.note-card-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.52rem 0.9rem;
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-h);
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+
+.note-card-dropdown-item:hover {
+  background: var(--bg-subtle);
+}
+
+.note-card-dropdown-item--danger {
+  color: #ef4444;
+}
+
+.note-card-dropdown-item--pin-active {
+  color: var(--accent);
 }
 
 /* ============================================================
@@ -539,6 +602,7 @@
 
 .search-bar__input {
   flex: 1;
+  min-width: 260px;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.35rem 0.6rem;
@@ -582,7 +646,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
-  margin-top: 0.4rem;
+  margin-top: 0.2rem;
 }
 
 /* ============================================================

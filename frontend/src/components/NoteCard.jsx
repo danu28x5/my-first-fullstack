@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import AttachmentPreview from './AttachmentPreview'
 import AvatarImage from './AvatarImage'
 
@@ -49,9 +50,37 @@ export default function NoteCard({
   const canUnarchive = isOwner && isArchiveView
   const canDelete   = isOwner && isArchiveView
   const canShare    = isOwner && !isArchiveView && !isSharedView
+  // True when at least one action is available — hides the trigger for shared viewers.
+  const hasActions = canEdit || canArchive || canUnarchive || canDelete || canShare
+
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef(/** @type {HTMLDivElement | null} */ (null))
+
+  // Close the dropdown when the user clicks outside it.
+  useEffect(() => {
+    if (!menuOpen) return
+    function handleOutside(e) {
+      if (menuRef.current && !menuRef.current.contains(/** @type {Node} */ (e.target))) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutside)
+    return () => document.removeEventListener('mousedown', handleOutside)
+  }, [menuOpen])
 
   return (
     <article className={`note-card${note.is_pinned && !isSharedView ? ' note-card--pinned' : ''}${isSharedView ? ' note-card--shared-view' : ''}`}>
+      {/* Pin button — top-right corner, icon only, owner active view only */}
+      {canPin && onTogglePin !== undefined ? (
+        <button
+          type="button"
+          className={`btn btn-ghost btn-pin-corner${note.is_pinned ? ' btn-pin-corner--active' : ''}`}
+          onClick={() => onTogglePin(note)}
+          aria-label={note.is_pinned ? 'Unpin note' : 'Pin note'}
+        >
+          📌
+        </button>
+      ) : null}
       {/* "Shared by" strip — shown only in the Shared with me view */}
       {isSharedView && ownerInfo !== null ? (
         <div className="note-card-owner-info">
@@ -118,77 +147,80 @@ export default function NoteCard({
             )}
           </div>
         ) : null}
+      </div>
+      {/* Footer: date flush-left, action-menu trigger flush-right */}
+      <div className="note-card-footer">
         <time className="note-card-date" dateTime={note.updated_at}>
           {formattedDate}
         </time>
-      </div>
-      <div className="note-card-actions">
-        {/* Pin button — owner active view only (rendering-conditional-render). */}
-        {canPin && onTogglePin !== undefined ? (
-          <button
-            type="button"
-            className={`btn btn-ghost btn-pin${note.is_pinned ? ' btn-pin--active' : ''}`}
-            onClick={() => onTogglePin(note)}
-            aria-label={note.is_pinned ? 'Unpin note' : 'Pin note'}
-          >
-            📌
-          </button>
+        {hasActions ? (
+          <div className="note-card-menu" ref={menuRef}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-menu-trigger"
+              onClick={() => setMenuOpen(o => !o)}
+              aria-label="Note actions"
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+            >
+              •••
+            </button>
+            {menuOpen ? (
+              <div className="note-card-dropdown" role="menu">
+                {canEdit && onEdit !== undefined ? (
+                  <button
+                    type="button"
+                    className="note-card-dropdown-item"
+                    role="menuitem"
+                    onClick={() => { onEdit(note); setMenuOpen(false) }}
+                  >
+                    Edit
+                  </button>
+                ) : null}
+                {canShare && onShare !== undefined ? (
+                  <button
+                    type="button"
+                    className="note-card-dropdown-item"
+                    role="menuitem"
+                    onClick={() => { onShare(note); setMenuOpen(false) }}
+                  >
+                    Share
+                  </button>
+                ) : null}
+                {canUnarchive && onUnarchive !== undefined ? (
+                  <button
+                    type="button"
+                    className="note-card-dropdown-item"
+                    role="menuitem"
+                    onClick={() => { onUnarchive(note.id); setMenuOpen(false) }}
+                  >
+                    Unarchive
+                  </button>
+                ) : null}
+                {canDelete && onDeletePermanently !== undefined ? (
+                  <button
+                    type="button"
+                    className="note-card-dropdown-item note-card-dropdown-item--danger"
+                    role="menuitem"
+                    onClick={() => { onDeletePermanently(note.id); setMenuOpen(false) }}
+                  >
+                    Delete permanently
+                  </button>
+                ) : null}
+                {canArchive && onArchive !== undefined ? (
+                  <button
+                    type="button"
+                    className="note-card-dropdown-item note-card-dropdown-item--danger"
+                    role="menuitem"
+                    onClick={() => { onArchive(note.id); setMenuOpen(false) }}
+                  >
+                    Archive
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         ) : null}
-        <div className="note-card-actions-end">
-          {/* Archive view: owner gets Unarchive + Delete.
-              Active view (shared): viewer gets nothing; editor gets Edit only.
-              Active view (owner): Edit + Archive + Share.
-              (rendering-conditional-render) */}
-          {canUnarchive && onUnarchive !== undefined ? (
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onUnarchive(note.id)}
-              >
-                Unarchive
-              </button>
-              {canDelete && onDeletePermanently !== undefined ? (
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  onClick={() => onDeletePermanently(note.id)}
-                >
-                  Delete
-                </button>
-              ) : null}
-            </>
-          ) : canEdit && onEdit !== undefined ? (
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onEdit(note)}
-              >
-                Edit
-              </button>
-              {canArchive && onArchive !== undefined ? (
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  onClick={() => onArchive(note.id)}
-                >
-                  Archive
-                </button>
-              ) : null}
-              {canShare && onShare !== undefined ? (
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => onShare(note)}
-                  aria-label="Share note"
-                >
-                  Share
-                </button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
       </div>
     </article>
   )
