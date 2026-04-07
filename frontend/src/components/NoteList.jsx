@@ -5,6 +5,7 @@ import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
 import ProfileEditor from './ProfileEditor'
 import SharePanel from './SharePanel'
+import DocumentList from './DocumentList'
 import Toast from './Toast'
 // JSDoc-only typedef imports — no runtime cost.
 /** @typedef {import('../lib/supabase').NoteWithTags} NoteWithTags */
@@ -56,7 +57,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [avatarSignedUrl, setAvatarSignedUrl] = useState(/** @type {string | null} */ (null))
   const [profileEditorOpen, setProfileEditorOpen] = useState(false)
   // activeView replaces the old showArchive boolean — three-state navigation.
-  const [activeView, setActiveView] = useState(/** @type {'notes'|'archived'|'shared'} */ ('notes'))
+  const [activeView, setActiveView] = useState(/** @type {'notes'|'archived'|'shared'|'documents'} */ ('notes'))
   // Ref mirrors activeView so the stable Realtime handler can read the current
   // view without needing activeView in its dependency array (which would
   // tear down and re-create the channel on every tab switch).
@@ -411,8 +412,8 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // ── Fetch: notes (re-runs when view or debounced search query changes) ────────
 
   useEffect(() => {
-    // Don't fetch own notes while on the shared tab — a separate fetch handles that.
-    if (activeView === 'shared') return
+    // Don't fetch own notes while on the shared or documents tab — separate fetches handle those.
+    if (activeView === 'shared' || activeView === 'documents') return
     let cancelled = false
     setLoadingNotes(true)
     setFetchError(null)
@@ -962,6 +963,13 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           >
             Shared with me
           </button>
+          <button
+            type="button"
+            className={`btn notes-tab${activeView === 'documents' ? ' notes-tab--active' : ''}`}
+            onClick={() => { setActiveView('documents'); setActiveTagId(null) }}
+          >
+            Documents
+          </button>
         </div>
         <div className="notes-header-actions">
           {/* Avatar + name as a single profile button.
@@ -1011,6 +1019,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           Tag pills are shown only in the active (non-archive) view with tags.
           Search bar is pushed to the right via margin-left: auto.
           (rendering-conditional-render: ternary, not &&) */}
+      {activeView !== 'documents' ? (
       <div className="tag-filter-bar">
         {activeView === 'notes' && allUserTags.length > 0 ? allUserTags.map(tag => (
           <button
@@ -1023,8 +1032,10 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           </button>
         )) : null}
       </div>
+      ) : null}
 
       <main className="notes-main">
+        {activeView !== 'documents' ? (
         <div className="notes-search-row">
           <div className="notes-search-input-wrap">
             <svg className="notes-search-row__icon" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1046,7 +1057,11 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
             </p>
           ) : null}
         </div>
-        {activeView === 'shared' ? (
+        ) : null}
+        {activeView === 'documents' ? (
+          /* ── Documents view ─────────────────────────────────────────── */
+          <DocumentList userId={userId} onToast={setToast} />
+        ) : activeView === 'shared' ? (
           /* ── Shared with me view ─────────────────────────────────────── */
           sharedNotesLoading ? (
             <p className="notes-status">Loading…</p>

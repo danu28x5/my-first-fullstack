@@ -19,6 +19,10 @@ export type NoteUpdate = Database['public']['Tables']['notes']['Update']
 export type NoteAttachment = Database['public']['Tables']['note_attachments']['Row']
 export type NoteAttachmentInsert = Database['public']['Tables']['note_attachments']['Insert']
 
+export type Document = Database['public']['Tables']['documents']['Row']
+export type DocumentInsert = Database['public']['Tables']['documents']['Insert']
+export type DocumentUpdate = Database['public']['Tables']['documents']['Update']
+
 // Tag row shape — kept here (not generated) because database.types.ts is
 // manually patched on this machine. Update after: supabase gen types typescript --local
 export type Tag = {

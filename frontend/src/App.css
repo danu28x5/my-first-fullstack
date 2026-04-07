@@ -922,12 +922,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Ensure <img> elements don't stretch beyond their declared size */
+  min-width: 0;
+  min-height: 0;
 }
 
 /* Size variants */
 .avatar--sm {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
   font-size: 0.7rem;
 }
 
@@ -942,9 +947,18 @@
   background: rgba(51, 138, 1, 0.12);
   color: var(--accent);
   border: 2px solid rgba(51, 138, 1, 0.25);
+  /* Border must be inset so the element stays at the declared width/height */
+  box-sizing: border-box;
   font-weight: 600;
   user-select: none;
   letter-spacing: 0.03em;
+  /* Explicit flex centering for the letter — <div> needs this unlike <img> */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* line-height: 0 collapses the line box so font ascenders/descenders
+     don't push the glyph off-centre vertically (same fix as .attachments-add-btn) */
+  line-height: 0;
 }
 
 /* ============================================================
@@ -1422,6 +1436,47 @@
   border-radius: 6px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   object-fit: contain;
+}
+
+/* ============================================================
+   Documents
+   ============================================================ */
+
+/* Toolbar above the document grid — contains "+ New document" button */
+.doc-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 1.25rem;
+}
+
+/* Wider editor card for documents — more room for Markdown editing */
+.doc-editor-card {
+  max-width: 640px;
+}
+
+/* Tall textarea for Markdown body */
+.doc-editor-body {
+  min-height: 260px;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas,
+    'DejaVu Sans Mono', monospace;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+/* Inline delete button on doc cards — same size as the menu trigger */
+.doc-delete-btn {
+  font-size: 0.85rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.note-card:hover .doc-delete-btn {
+  opacity: 0.6;
+}
+
+.doc-delete-btn:hover {
+  opacity: 1 !important;
 }
 
 /* ============================================================
