@@ -81,11 +81,12 @@ export default function AttachmentPreview({ attachment, onDelete }) {
   // (rerender-derived-state-no-effect rule).
   const isEditorMode = onDelete !== undefined
 
-  // Fetch a signed URL in card mode for images AND PDFs (for click-to-open).
-  // Editor rows show name/size only — no thumbnail URL needed.
+  // Fetch a signed URL for:
+  //  – card mode (all types, for click-to-open / thumbnail)
+  //  – editor mode images (to show a small thumbnail in the row)
   // Signed URLs are generated at render time and never persisted to the DB.
   useEffect(() => {
-    if (isEditorMode) return
+    if (isEditorMode && !isImage) return
     let cancelled = false
 
     supabase.storage
@@ -103,7 +104,20 @@ export default function AttachmentPreview({ attachment, onDelete }) {
   if (isEditorMode) {
     return (
       <div className="attachment-preview attachment-preview--editor">
-        {isImage ? <ImageIcon /> : <FileIcon />}
+        {isImage ? (
+          signedUrl && !imgError ? (
+            <img
+              src={signedUrl}
+              alt={attachment.file_name}
+              className="attachment-preview__img--editor-thumb"
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <ImageIcon />
+          )
+        ) : (
+          <FileIcon />
+        )}
         <span className="attachment-preview__filename" title={attachment.file_name}>
           {attachment.file_name}
         </span>

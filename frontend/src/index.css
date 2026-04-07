@@ -3,17 +3,18 @@
   --text-h: #0f1f0a;
   --bg: #ffffff;
   --bg-subtle: #f3f8f0;
-  --bg-filter: #fdfffc;
+  --bg-filter: #fbfefb;
   --border: #cce0c4;
   --code-bg: #f0f9eb;
   --accent: #338a01;
   --accent-bg: rgba(51, 138, 1, 0.08);
   --accent-border: rgba(51, 138, 1, 0.45);
+  --text-muted: #8a9e82;
   --shadow:
     rgba(51, 138, 1, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.04) 0 4px 6px -2px;
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --sans: 'Inter', system-ui, sans-serif;
+  --heading: 'Inter', system-ui, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
   font: 18px/145% var(--sans);
@@ -34,19 +35,41 @@
 /* data-theme="dark" is set on <html> by App.jsx — selector must be
    :root[attr] (self), NOT html[attr] :root (descendant — never matches). */
 :root[data-theme="dark"] {
-  --text: #78a866;
-  --text-h: #dff0d5;
-  --bg: #0c1a09;
-  --bg-subtle: #101f0d;
-  --bg-filter: #111e0e;
-  --border: #213d18;
-  --code-bg: #172b12;
-  --accent: #57bb00;
-  --accent-bg: rgba(87, 187, 0, 0.12);
-  --accent-border: rgba(87, 187, 0, 0.45);
+  --text: #9ab896;
+  --text-h: #e6f2e2;
+  --bg: #131713;
+  --bg-subtle: #191e19;
+  --bg-filter: #1d2320;
+  --border: #2e3d2b;
+  --code-bg: #1a2218;
+  --accent: #52a828;
+  --accent-bg: rgba(82, 168, 40, 0.10);
+  --accent-border: rgba(82, 168, 40, 0.35);
+  --text-muted: #637a5e;
   --shadow:
-    rgba(0, 0, 0, 0.6) 0 10px 15px -3px, rgba(0, 0, 0, 0.4) 0 4px 6px -2px;
+    rgba(0, 0, 0, 0.7) 0 10px 15px -3px, rgba(0, 0, 0, 0.5) 0 4px 6px -2px;
   color-scheme: dark;
+}
+
+/* Auto-apply dark mode for first-time visitors whose OS prefers dark.
+   :root[data-theme="light"] beats the media query — explicit user choice wins. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --text: #9ab896;
+    --text-h: #e6f2e2;
+    --bg: #131713;
+    --bg-subtle: #191e19;
+    --bg-filter: #1d2320;
+    --border: #2e3d2b;
+    --code-bg: #1a2218;
+    --accent: #52a828;
+    --accent-bg: rgba(82, 168, 40, 0.10);
+    --accent-border: rgba(82, 168, 40, 0.35);
+    --text-muted: #637a5e;
+    --shadow:
+      rgba(0, 0, 0, 0.7) 0 10px 15px -3px, rgba(0, 0, 0, 0.5) 0 4px 6px -2px;
+    color-scheme: dark;
+  }
 }
 
 body {
@@ -69,4 +92,10 @@ h3 {
 
 p {
   margin: 0;
+}
+
+/* Global keyboard-navigation focus ring — matches the accent colour. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

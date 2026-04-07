@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import AvatarImage from './AvatarImage'
 import NoteCard from './NoteCard'
@@ -904,25 +904,39 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
             {tag.name}
           </button>
         )) : null}
-        <div className="search-bar">
-          <input
-            type="search"
-            className="search-bar__input"
-            placeholder="Search notes..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            aria-label="Search notes"
-          />
-        </div>
       </div>
 
       <main className="notes-main">
+        <div className="notes-search-row">
+          <div className="notes-search-input-wrap">
+            <svg className="notes-search-row__icon" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              type="search"
+              className="notes-search-input"
+              placeholder="Search notes..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              aria-label="Search notes"
+            />
+          </div>
+          {isSearching && !loadingNotes && activeView !== 'shared' ? (
+            <p className="notes-search-hint">
+              {visibleNotes.length === 1 ? '1 note found' : `${visibleNotes.length} notes found`}
+            </p>
+          ) : null}
+        </div>
         {activeView === 'shared' ? (
           /* ── Shared with me view ─────────────────────────────────────── */
           sharedNotesLoading ? (
             <p className="notes-status">Loading…</p>
           ) : sharedNotes.length === 0 ? (
-            <p className="notes-status">No notes have been shared with you yet.</p>
+            <div className="notes-empty">
+              <p className="notes-empty__title">No shared notes yet</p>
+              <p className="notes-empty__body">When someone shares a note with you, it will appear here.</p>
+            </div>
           ) : (
             <div className="notes-grid">
               {sharedNotes.map(row => {
@@ -960,11 +974,29 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           ) : fetchError !== null ? (
             <p className="notes-status notes-error" role="alert">{fetchError}</p>
           ) : notes.length === 0 ? (
-            <p className="notes-status">
-              {isSearching
-                ? `No results for \u201c${debouncedQuery}\u201d.`
-                : activeView === 'archived' ? 'No archived notes.' : 'No notes yet. Create your first one!'}
-            </p>
+            isSearching ? (
+              <div className="notes-empty">
+                <p className="notes-empty__title">No results</p>
+                <p className="notes-empty__body">No notes matched “{debouncedQuery}”. Try a different search.</p>
+              </div>
+            ) : activeView === 'archived' ? (
+              <div className="notes-empty">
+                <p className="notes-empty__title">No archived notes</p>
+                <p className="notes-empty__body">Notes you archive will appear here.</p>
+              </div>
+            ) : (
+              <div className="notes-empty">
+                <p className="notes-empty__title">Your notebook is empty</p>
+                <p className="notes-empty__body">Get started by creating your first note.</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEditingNote('new')}
+                >
+                  + New note
+                </button>
+              </div>
+            )
           ) : (
             <>
               <div className="notes-grid">
@@ -993,7 +1025,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
                     onClick={handleLoadMore}
                     disabled={loadingMore}
                   >
-                    {loadingMore ? 'Loading\u2026' : 'Load more'}
+                    {loadingMore ? 'Loading…' : `Load more (${totalCount !== null ? totalCount - notes.length : '…'} remaining)`}
                   </button>
                 </div>
               ) : null}

@@ -56,7 +56,12 @@ function App() {
   // values, which risks rendering "null", "0", or "undefined" as text
   // (rendering-conditional-render).
   return isLoading ? (
-    <div className="app-loading" aria-live="polite">Loading...</div>
+    <div className="app-loading" aria-live="polite">
+      <div className="app-loading__inner">
+        <span className="app-loading__title">Notes</span>
+        <div className="app-loading__spinner" aria-hidden="true" />
+      </div>
+    </div>
   ) : session !== null ? (
     <NoteList
       userId={session.user.id}

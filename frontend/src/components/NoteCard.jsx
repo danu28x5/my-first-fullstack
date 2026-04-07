@@ -69,13 +69,21 @@ export default function NoteCard({
   }, [menuOpen])
 
   return (
-    <article className={`note-card${note.is_pinned && !isSharedView ? ' note-card--pinned' : ''}${isSharedView ? ' note-card--shared-view' : ''}`}>
+    <article
+      className={`note-card${note.is_pinned && !isSharedView ? ' note-card--pinned' : ''}${isSharedView ? ' note-card--shared-view' : ''}`}
+      onClick={() => { if (canEdit && onEdit) onEdit(note) }}
+      style={canEdit ? { cursor: 'pointer' } : undefined}
+      role={canEdit ? 'button' : undefined}
+      tabIndex={canEdit ? 0 : undefined}
+      onKeyDown={canEdit ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (onEdit) onEdit(note) } } : undefined}
+      aria-label={canEdit ? `Edit note: ${note.title}` : undefined}
+    >
       {/* Pin button — top-right corner, icon only, owner active view only */}
       {canPin && onTogglePin !== undefined ? (
         <button
           type="button"
           className={`btn btn-ghost btn-pin-corner${note.is_pinned ? ' btn-pin-corner--active' : ''}`}
-          onClick={() => onTogglePin(note)}
+          onClick={(e) => { e.stopPropagation(); onTogglePin(note) }}
           aria-label={note.is_pinned ? 'Unpin note' : 'Pin note'}
         >
           📌
@@ -158,12 +166,12 @@ export default function NoteCard({
             <button
               type="button"
               className="btn btn-ghost btn-menu-trigger"
-              onClick={() => setMenuOpen(o => !o)}
+              onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o) }}
               aria-label="Note actions"
               aria-expanded={menuOpen}
               aria-haspopup="menu"
             >
-              •••
+              ⋮
             </button>
             {menuOpen ? (
               <div className="note-card-dropdown" role="menu">

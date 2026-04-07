@@ -267,7 +267,19 @@ export default function NoteEditor({
 
           {/* ── Attachments section ───────────────────────────────────── */}
           <div className="field">
-            <label>Attachments</label>
+            <div className="attachments-header">
+              <label>Attachments</label>
+              <button
+                type="button"
+                className="attachments-add-btn"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading || saving}
+                aria-label={isUploading ? 'Uploading…' : 'Add attachment'}
+                title={isUploading ? 'Uploading…' : 'Add attachment'}
+              >
+                +
+              </button>
+            </div>
 
             {/* Existing (committed) attachments — all rendered as uniform
                 editor rows via AttachmentPreview's editor mode. */}
@@ -298,7 +310,7 @@ export default function NoteEditor({
               </div>
             ) : null}
 
-            {/* Hidden file input — triggered by the button below */}
+            {/* Hidden file input — triggered by the + button in the header */}
             <input
               ref={fileInputRef}
               type="file"
@@ -306,15 +318,6 @@ export default function NoteEditor({
               onChange={handleFileChange}
               hidden
             />
-
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm attach-btn"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading || saving}
-            >
-              {isUploading ? 'Uploading…' : 'Attach file'}
-            </button>
 
             {uploadError !== null ? (
               <p className="editor-error" role="alert">{uploadError}</p>
