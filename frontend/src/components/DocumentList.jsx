@@ -143,18 +143,6 @@ export default function DocumentList({ userId, onToast }) {
     onToast('Document deleted')
   }, [onToast])
 
-  // ── Editor save handler ─────────────────────────────────────────────────
-
-  const handleEditorSave = useCallback((/** @type {Document} */ saved) => {
-    // Move saved doc to front (most recently modified).
-    setDocuments(curr => {
-      const next = curr.filter(d => d.id !== saved.id)
-      return [saved, ...next]
-    })
-    setEditingDoc(null)
-    onToast('Document saved')
-  }, [onToast])
-
   // ── Helpers ─────────────────────────────────────────────────────────────
 
   /** Truncate body to ~120 chars for card preview. */
@@ -237,8 +225,7 @@ export default function DocumentList({ userId, onToast }) {
         <DocumentEditor
           key={editingDoc.id}
           document={editingDoc}
-          onSave={handleEditorSave}
-          onCancel={() => setEditingDoc(null)}
+          onClose={() => setEditingDoc(null)}
         />
       ) : null}
     </>
