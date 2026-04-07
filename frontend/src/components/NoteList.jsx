@@ -179,6 +179,42 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           }
         },
       )
+      .on(
+        'postgres_changes',
+        // Filter by user_id so only this user's attachments are delivered.
+        // REPLICA IDENTITY FULL on note_attachments ensures payload.old carries
+        // note_id so the note can be located on DELETE.
+        { event: 'INSERT', schema: 'public', table: 'note_attachments', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const attachment = /** @type {any} */ (payload.new)
+          // Number() coerces WAL bigint payloads that may arrive as strings.
+          const noteId = Number(attachment.note_id)
+          setNotes(curr => curr.map(n => {
+            if (n.id !== noteId) return n
+            // Guard against same-tab double-add: handleAttachFile / handleCreate
+            // already append optimistically before this Realtime event fires.
+            // Number() normalises WAL string IDs ("42") against PostgREST number IDs (42).
+            if (n.note_attachments.some(a => a.id === Number(attachment.id))) return n
+            return { ...n, note_attachments: [...n.note_attachments, attachment] }
+          }))
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'note_attachments', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const deleted = /** @type {any} */ (payload.old)
+          const noteId = Number(deleted.note_id)
+          // Number() fixes the WAL string→number type mismatch for bigint id columns
+          // (same pattern used for note_id above and for note_shares DELETE).
+          const deletedId = Number(deleted.id)
+          setNotes(curr => curr.map(n =>
+            n.id === noteId
+              ? { ...n, note_attachments: n.note_attachments.filter(a => a.id !== deletedId) }
+              : n
+          ))
+        },
+      )
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
@@ -260,6 +296,21 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
         setSharedNotes(curr => curr.filter(r => r.note_id !== noteId))
         sharedNoteIdsRef.current.delete(noteId)
       })
+      .on('broadcast', { event: 'attachment_deleted' }, (payload) => {
+        // Fired by NoteList.handleDeleteAttachment after a successful delete.
+        // postgres_changes DELETE events are silently dropped for recipients
+        // because Supabase's RLS auth check runs against the live table — the
+        // row is already gone so the check fails. Broadcast bypasses RLS.
+        const noteId = Number(payload.payload?.note_id)
+        const attachmentId = Number(payload.payload?.attachment_id)
+        if (!noteId || !attachmentId) return
+        setSharedNotes(curr => curr.map(r => {
+          if (r.note_id !== noteId) return r
+          const existing = r.notes
+          if (!existing) return r
+          return { ...r, notes: { ...existing, note_attachments: existing.note_attachments.filter(a => a.id !== attachmentId) } }
+        }))
+      })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [userId])
@@ -280,6 +331,47 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
             if (r.note_id !== updated.id) return r
             const existing = r.notes
             return { ...r, notes: existing ? { ...updated, note_tags: existing.note_tags, note_attachments: existing.note_attachments, users: existing.users } : null }
+          }))
+        },
+      )
+      .on(
+        'postgres_changes',
+        // No server-side filter — shared note IDs are a dynamic set.
+        // Gate delivery client-side via sharedNoteIdsRef (same pattern as
+        // the UPDATE handler above). RLS on note_attachments ensures only
+        // rows the authenticated user may read are delivered.
+        { event: 'INSERT', schema: 'public', table: 'note_attachments' },
+        (payload) => {
+          const attachment = /** @type {any} */ (payload.new)
+          const noteId = Number(attachment.note_id)
+          if (!sharedNoteIdsRef.current.has(noteId)) return
+          setSharedNotes(curr => curr.map(r => {
+            if (r.note_id !== noteId) return r
+            const existing = r.notes
+            if (!existing) return r
+            // Guard against same-tab double-add (same pattern as own-notes INSERT handler).
+            // Number() normalises WAL string IDs ("42") against PostgREST number IDs (42).
+            if (existing.note_attachments.some(a => a.id === Number(attachment.id))) return r
+            return { ...r, notes: { ...existing, note_attachments: [...existing.note_attachments, attachment] } }
+          }))
+        },
+      )
+      .on(
+        'postgres_changes',
+        // REPLICA IDENTITY FULL on note_attachments ensures payload.old
+        // carries note_id so the entry can be located on DELETE.
+        { event: 'DELETE', schema: 'public', table: 'note_attachments' },
+        (payload) => {
+          const deleted = /** @type {any} */ (payload.old)
+          const noteId = Number(deleted.note_id)
+          // Number() fixes the WAL string→number type mismatch for bigint id columns.
+          const deletedId = Number(deleted.id)
+          if (!sharedNoteIdsRef.current.has(noteId)) return
+          setSharedNotes(curr => curr.map(r => {
+            if (r.note_id !== noteId) return r
+            const existing = r.notes
+            if (!existing) return r
+            return { ...r, notes: { ...existing, note_attachments: existing.note_attachments.filter(a => a.id !== deletedId) } }
           }))
         },
       )
@@ -712,6 +804,32 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     if (storageResult.error || dbResult.error) {
       setNotes(snapshot)
       setToast(`Delete failed: ${storageResult.error?.message ?? dbResult.error?.message}`)
+      return
+    }
+
+    // Broadcast attachment_deleted to all note recipients so their shared view
+    // updates immediately. postgres_changes DELETE events are silently dropped
+    // for recipients because Supabase's RLS auth check runs against the live
+    // table — the row is already gone so the check fails and the event is
+    // never delivered. Broadcast bypasses table-level RLS entirely.
+    // Same pattern as SharePanel.handleRevoke → note_revoked.
+    const { data: shares } = await supabase
+      .from('note_shares')
+      .select('shared_with_user_id')
+      .eq('note_id', noteId)
+    if (shares && shares.length > 0) {
+      shares.forEach(s => {
+        const bc = supabase.channel(`note_shares:recipient:${s.shared_with_user_id}`)
+        bc.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            bc.send({
+              type: 'broadcast',
+              event: 'attachment_deleted',
+              payload: { note_id: noteId, attachment_id: attachment.id },
+            }).finally(() => supabase.removeChannel(bc))
+          }
+        })
+      })
     }
   }, [editingNote])
 
