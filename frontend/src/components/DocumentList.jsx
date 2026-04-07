@@ -1,25 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 import { supabase } from '../lib/supabase'
-import DocumentEditor from './DocumentEditor'
 import Toast from './Toast'
 /** @typedef {import('../lib/supabase').Document} Document */
 
 /**
- * Documents view — lists, creates, deletes, and opens a placeholder editor
- * for long-form Markdown documents. Follows the same data-flow and Realtime
- * patterns as NoteList.
+ * Documents view — lists, creates, deletes, and navigates to the document
+ * editor. Follows the same data-flow and Realtime patterns as NoteList.
  *
- * @param {{
- *   userId: string,
- *   onToast: (msg: string) => void,
- * }} props
+ * @param {{ userId: string }} props
  */
-export default function DocumentList({ userId, onToast }) {
+export default function DocumentList({ userId }) {
+  const navigate = useNavigate()
   const [documents, setDocuments] = useState(/** @type {Document[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(/** @type {string | null} */ (null))
-  // editingDoc: null = closed, Document = editing that document
-  const [editingDoc, setEditingDoc] = useState(/** @type {Document | null} */ (null))
+  const [toast, setToast] = useState(/** @type {string | null} */ (null))
+  // Stable callback — passed to Toast as onDismiss (rerender-functional-setstate).
+  const dismissToast = useCallback(() => setToast(null), [])
 
   // Track IDs inserted by this tab so the Realtime INSERT handler can skip
   // them — prevents double-add race (same pattern as NoteList).
@@ -114,18 +112,18 @@ export default function DocumentList({ userId, onToast }) {
       .single()
 
     if (error) {
-      onToast(`Create failed: ${error.message}`)
+      setToast(`Create failed: ${error.message}`)
       return
     }
 
     // Register ID before await so Realtime handler skips the duplicate.
     optimisticInsertIds.current.add(data.id)
 
-    // Prepend optimistically and open editor.
+    // Prepend optimistically and navigate to editor.
     setDocuments(curr => [data, ...curr])
-    setEditingDoc(data)
-    onToast('Document created')
-  }, [userId, onToast])
+    navigate(`/documents/${data.id}`)
+    setToast('Document created')
+  }, [userId, navigate])
 
   // ── Delete ──────────────────────────────────────────────────────────────
 
@@ -137,11 +135,11 @@ export default function DocumentList({ userId, onToast }) {
     const { error } = await supabase.from('documents').delete().eq('id', id)
     if (error) {
       setDocuments(snapshot)
-      onToast(`Delete failed: ${error.message}`)
+      setToast(`Delete failed: ${error.message}`)
       return
     }
-    onToast('Document deleted')
-  }, [onToast])
+    setToast('Document deleted')
+  }, [])
 
   // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -161,17 +159,7 @@ export default function DocumentList({ userId, onToast }) {
   // ── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <>
-      <div className="doc-toolbar">
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={handleCreate}
-        >
-          + New document
-        </button>
-      </div>
-
+    <main className="notes-main">
       {loading ? (
         <p className="notes-status">Loading…</p>
       ) : fetchError !== null ? (
@@ -189,15 +177,19 @@ export default function DocumentList({ userId, onToast }) {
           </button>
         </div>
       ) : (
-        <div className="notes-grid">
+        <>
+          <p className="notes-doc-count">
+            {documents.length === 1 ? '1 document' : `${documents.length} documents`}
+          </p>
+          <div className="notes-grid">
           {documents.map(doc => (
             <div
               key={doc.id}
               className="note-card doc-card"
               role="button"
               tabIndex={0}
-              onClick={() => setEditingDoc(doc)}
-              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingDoc(doc) } }}
+              onClick={() => navigate(`/documents/${doc.id}`)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/documents/${doc.id}`) } }}
             >
               <div className="note-card-body">
                 <h3 className="note-card-title">{doc.title}</h3>
@@ -213,21 +205,31 @@ export default function DocumentList({ userId, onToast }) {
                   aria-label="Delete document"
                   onClick={e => { e.stopPropagation(); handleDelete(doc.id) }}
                 >
-                  🗑
+                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                  </svg>
                 </button>
               </div>
             </div>
           ))}
-        </div>
+            <button
+              type="button"
+              className="doc-new-card"
+              onClick={handleCreate}
+              aria-label="Create new document"
+            >
+              <span className="doc-new-card__icon">+</span>
+              <span className="doc-new-card__label">New document</span>
+            </button>
+          </div>
+        </>
       )}
 
-      {editingDoc !== null ? (
-        <DocumentEditor
-          key={editingDoc.id}
-          document={editingDoc}
-          onClose={() => setEditingDoc(null)}
-        />
-      ) : null}
-    </>
+      <Toast message={toast} onDismiss={dismissToast} />
+    </main>
   )
 }

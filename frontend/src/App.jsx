@@ -1,7 +1,11 @@
 ﻿import { useEffect, useState } from 'react'
+import { Routes, Route, Navigate } from 'react-router'
 import { supabase } from './lib/supabase'
 import AuthForm from './components/AuthForm'
+import Layout from './components/Layout'
 import NoteList from './components/NoteList'
+import DocumentList from './components/DocumentList'
+import DocumentEditorRoute from './components/DocumentEditorRoute'
 import './App.css'
 
 // Imports are direct (not barrel) — each component and the Supabase client
@@ -63,13 +67,24 @@ function App() {
       </div>
     </div>
   ) : session !== null ? (
-    <NoteList
-      userId={session.user.id}
-      userEmail={session.user.email}
-      theme={theme}
-      onToggleTheme={handleToggleTheme}
-      onSignOut={handleSignOut}
-    />
+    <Routes>
+      <Route element={
+        <Layout
+          userId={session.user.id}
+          userEmail={session.user.email}
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+          onSignOut={handleSignOut}
+        />
+      }>
+        <Route index element={<NoteList userId={session.user.id} />} />
+        <Route path="archived" element={<NoteList userId={session.user.id} />} />
+        <Route path="shared" element={<NoteList userId={session.user.id} />} />
+        <Route path="documents" element={<DocumentList userId={session.user.id} />} />
+        <Route path="documents/:documentId" element={<DocumentEditorRoute />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </Routes>
   ) : (
     <AuthForm
       theme={theme}

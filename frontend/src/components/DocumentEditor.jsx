@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useDeferredValue } from 'react'
+import { useNavigate } from 'react-router'
 import { supabase } from '../lib/supabase'
 import MarkdownPreview from './MarkdownPreview'
 import SplitPane from './SplitPane'
@@ -22,10 +23,10 @@ const SAVE_DELAY = 1000
  *
  * @param {{
  *   document: Document,
- *   onClose: () => void,
  * }} props
  */
-export default function DocumentEditor({ document: doc, onClose }) {
+export default function DocumentEditor({ document: doc }) {
+  const navigate = useNavigate()
   // Lazy state init — functions run once on mount (rerender-lazy-state-init).
   const [title, setTitle] = useState(() => doc.title)
   const [body, setBody] = useState(() => doc.body ?? '')
@@ -135,6 +136,14 @@ export default function DocumentEditor({ document: doc, onClose }) {
     <div className="doc-editor-fullscreen">
       {/* ── Top toolbar ──────────────────────────────────────────────── */}
       <div className="doc-editor-toolbar">
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => navigate('/documents')}
+        >
+          ← Back
+        </button>
+
         <input
           className="doc-editor-title"
           type="text"
@@ -158,14 +167,6 @@ export default function DocumentEditor({ document: doc, onClose }) {
           <span className="doc-editor-shortcut-hint" aria-hidden="true">
             Ctrl+B bold · Ctrl+I italic
           </span>
-
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={onClose}
-          >
-            Close
-          </button>
         </div>
       </div>
 

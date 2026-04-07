@@ -1,11 +1,9 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router'
 import { supabase } from '../lib/supabase'
-import AvatarImage from './AvatarImage'
 import NoteCard from './NoteCard'
 import NoteEditor from './NoteEditor'
-import ProfileEditor from './ProfileEditor'
 import SharePanel from './SharePanel'
-import DocumentList from './DocumentList'
 import Toast from './Toast'
 // JSDoc-only typedef imports — no runtime cost.
 /** @typedef {import('../lib/supabase').NoteWithTags} NoteWithTags */
@@ -30,17 +28,20 @@ function pinSort(a, b) {
 // NoteList is defined at module top level (rerender-no-inline-components).
 
 /**
- * @param {{ userId: string, userEmail: string | undefined, theme: string, onToggleTheme: () => void, onSignOut: () => void }} props
+ * @param {{ userId: string }} props
  */
-export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSignOut }) {
+export default function NoteList({ userId }) {
+  // Derive the active view from the current URL path instead of local state —
+  // the router owns navigation, NoteList just reads it.
+  const location = useLocation()
+  const activeView = location.pathname === '/archived' ? 'archived'
+    : location.pathname === '/shared' ? 'shared'
+    : 'notes'
+
   const [notes, setNotes] = useState(/** @type {import('../lib/supabase').Note[]} */ ([]))
   const [fetchError, setFetchError] = useState(/** @type {string | null} */ (null))
   const [loadingNotes, setLoadingNotes] = useState(true)
   // totalCount: number of active notes on the server (null when not paginating, e.g. search/archive)
-  // activeView replaces the old showArchive: boolean.
-  //   'notes'    → active notes (was !showArchive)
-  //   'archived' → archived notes (was showArchive)
-  //   'shared'   → notes shared with this user by others
   const [totalCount, setTotalCount] = useState(/** @type {number | null} */ (null))
   const [loadingMore, setLoadingMore] = useState(false)
   // editingNote: null  → editor hidden
@@ -49,15 +50,6 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   const [editingNote, setEditingNote] = useState(
     /** @type {import('../lib/supabase').Note | 'new' | null} */ (null),
   )
-  const [displayName, setDisplayName] = useState(/** @type {string | null} */ (null))
-  // avatarPath: the raw storage path stored in the DB (e.g. "uuid/avatar.png").
-  // avatarSignedUrl: a time-limited signed URL generated from that path at
-  // display time — never persisted to the database.
-  const [avatarPath, setAvatarPath] = useState(/** @type {string | null} */ (null))
-  const [avatarSignedUrl, setAvatarSignedUrl] = useState(/** @type {string | null} */ (null))
-  const [profileEditorOpen, setProfileEditorOpen] = useState(false)
-  // activeView replaces the old showArchive boolean — three-state navigation.
-  const [activeView, setActiveView] = useState(/** @type {'notes'|'archived'|'shared'|'documents'} */ ('notes'))
   // Ref mirrors activeView so the stable Realtime handler can read the current
   // view without needing activeView in its dependency array (which would
   // tear down and re-create the channel on every tab switch).
@@ -380,40 +372,28 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     return () => { supabase.removeChannel(channel) }
   }, [userId])
 
-  // ── Fetch: profile + tags (once on mount, parallel) ─────────────────────────
-  // Promise.all fires both requests simultaneously — one round trip instead of
-  // two sequential ones (async-parallel). The signed URL fetch is sequential
-  // because it depends on the avatar_path from the profile query
-  // (async-defer-await: await only where the value is first needed).
+  // ── Fetch: tags (once on mount) ──────────────────────────────────────────
+  // Profile is now fetched by Layout; NoteList only needs tags.
 
   useEffect(() => {
     let cancelled = false
-    async function fetchProfileAndTags() {
-      const [{ data: profile }, { data: tags }] = await Promise.all([
-        supabase.from('users').select('display_name, avatar_path').eq('id', userId).single(),
-        supabase.from('tags').select('id, name').order('name'),
-      ])
+    async function fetchTags() {
+      const { data: tags } = await supabase
+        .from('tags')
+        .select('id, name')
+        .order('name')
       if (cancelled) return
-      setDisplayName(profile?.display_name ?? null)
       setAllUserTags(tags ?? [])
-      const path = profile?.avatar_path ?? null
-      setAvatarPath(path)
-      if (path) {
-        const { data: urlData } = await supabase.storage
-          .from('avatars')
-          .createSignedUrl(path, 3600)
-        if (!cancelled) setAvatarSignedUrl(urlData?.signedUrl ?? null)
-      }
     }
-    fetchProfileAndTags()
+    fetchTags()
     return () => { cancelled = true }
-  }, [])
+  }, [userId])
 
   // ── Fetch: notes (re-runs when view or debounced search query changes) ────────
 
   useEffect(() => {
-    // Don't fetch own notes while on the shared or documents tab — separate fetches handle those.
-    if (activeView === 'shared' || activeView === 'documents') return
+    // Don't fetch own notes while on the shared tab — a separate fetch handles it.
+    if (activeView === 'shared') return
     let cancelled = false
     setLoadingNotes(true)
     setFetchError(null)
@@ -716,29 +696,6 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
     return data
   }, [])
 
-  // ── Profile ───────────────────────────────────────────────────────────────
-
-  const handleProfileSave = useCallback(async (name) => {
-    const { error } = await supabase
-      .from('users')
-      .update({ display_name: name })
-      .eq('id', userId)
-    if (error) throw error
-    // Update header immediately without a re-fetch (rerender-functional-setstate).
-    setDisplayName(name)
-    setProfileEditorOpen(false)
-    setToast('Profile saved')
-  }, [])
-
-  // Called by ProfileEditor after a successful avatar upload + DB write.
-  // Generates a fresh signed URL from the saved path and updates state so
-  // the header avatar refreshes immediately (rerender-move-effect-to-event).
-  const handleAvatarSave = useCallback(async (path) => {
-    setAvatarPath(path)
-    const { data } = await supabase.storage.from('avatars').createSignedUrl(path, 3600)
-    setAvatarSignedUrl(data?.signedUrl ?? null)
-  }, [])
-
   // ── Attachment: upload a file to an existing note ─────────────────────────
 
   // Generates a collision-safe storage path, uploads the file, inserts the
@@ -939,87 +896,11 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div className="notes-layout">
-      <header className="notes-header">
-        <div className="notes-tabs">
-          <button
-            type="button"
-            className={`btn notes-tab${activeView === 'notes' ? ' notes-tab--active' : ''}`}
-            onClick={() => setActiveView('notes')}
-          >
-            Notes
-          </button>
-          <button
-            type="button"
-            className={`btn notes-tab${activeView === 'archived' ? ' notes-tab--active' : ''}`}
-            onClick={() => { setActiveView('archived'); setActiveTagId(null) }}
-          >
-            Archived
-          </button>
-          <button
-            type="button"
-            className={`btn notes-tab${activeView === 'shared' ? ' notes-tab--active' : ''}`}
-            onClick={() => { setActiveView('shared'); setActiveTagId(null) }}
-          >
-            Shared with me
-          </button>
-          <button
-            type="button"
-            className={`btn notes-tab${activeView === 'documents' ? ' notes-tab--active' : ''}`}
-            onClick={() => { setActiveView('documents'); setActiveTagId(null) }}
-          >
-            Documents
-          </button>
-        </div>
-        <div className="notes-header-actions">
-          {/* Avatar + name as a single profile button.
-              key=avatarSignedUrl resets AvatarImage's imgError state when the
-              URL changes — keyed-reset pattern avoids an effect for derived
-              error state (rerender-derived-state-no-effect). */}
-          <button
-            type="button"
-            className="btn btn-ghost notes-profile-btn"
-            onClick={() => setProfileEditorOpen(true)}
-            aria-label="Edit profile"
-          >
-            <AvatarImage
-              key={avatarSignedUrl}
-              signedUrl={avatarSignedUrl}
-              displayName={displayName}
-              email={userEmail}
-              size="sm"
-            />
-            <span className="notes-user">{displayName ?? userEmail}</span>
-          </button>
-          {/* + New note only in the active notes view (rendering-conditional-render). */}
-          {activeView === 'notes' ? (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setEditingNote('new')}
-            >
-              + New note
-            </button>
-          ) : null}
-          <button type="button" className="btn btn-ghost" onClick={onSignOut}>
-            Sign out
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-icon"
-            onClick={onToggleTheme}
-            aria-label="Toggle day/night theme"
-          >
-            {theme === 'light' ? '🌙' : '☀️'}
-          </button>
-        </div>
-      </header>
-
+    <>
       {/* Tag filter bar — always rendered so the search input is always visible.
           Tag pills are shown only in the active (non-archive) view with tags.
           Search bar is pushed to the right via margin-left: auto.
           (rendering-conditional-render: ternary, not &&) */}
-      {activeView !== 'documents' ? (
       <div className="tag-filter-bar">
         {activeView === 'notes' && allUserTags.length > 0 ? allUserTags.map(tag => (
           <button
@@ -1032,24 +913,33 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           </button>
         )) : null}
       </div>
-      ) : null}
 
       <main className="notes-main">
-        {activeView !== 'documents' ? (
         <div className="notes-search-row">
-          <div className="notes-search-input-wrap">
-            <svg className="notes-search-row__icon" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input
-              type="search"
-              className="notes-search-input"
-              placeholder="Search notes..."
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              aria-label="Search notes"
-            />
+          <div className="notes-search-row__bar">
+            <div className="notes-search-input-wrap">
+              <svg className="notes-search-row__icon" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                type="search"
+                className="notes-search-input"
+                placeholder="Search notes..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                aria-label="Search notes"
+              />
+            </div>
+            {activeView === 'notes' ? (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setEditingNote('new')}
+              >
+                + New note
+              </button>
+            ) : null}
           </div>
           {isSearching && !loadingNotes && activeView !== 'shared' ? (
             <p className="notes-search-hint">
@@ -1057,11 +947,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
             </p>
           ) : null}
         </div>
-        ) : null}
-        {activeView === 'documents' ? (
-          /* ── Documents view ─────────────────────────────────────────── */
-          <DocumentList userId={userId} onToast={setToast} />
-        ) : activeView === 'shared' ? (
+        {activeView === 'shared' ? (
           /* ── Shared with me view ─────────────────────────────────────── */
           sharedNotesLoading ? (
             <p className="notes-status">Loading…</p>
@@ -1158,7 +1044,7 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
                     onClick={handleLoadMore}
                     disabled={loadingMore}
                   >
-                    {loadingMore ? 'Loading…' : `Load more (${totalCount !== null ? totalCount - notes.length : '…'} remaining)`}
+                    {loadingMore ? 'Loading…' : 'Load more'}
                   </button>
                 </div>
               ) : null}
@@ -1193,19 +1079,9 @@ export default function NoteList({ userId, userEmail, theme, onToggleTheme, onSi
           onToast={setToast}
         />
       ) : null}
-      {profileEditorOpen ? (
-        <ProfileEditor
-          initialName={displayName ?? userEmail ?? ''}
-          userId={userId}
-          initialAvatarSignedUrl={avatarSignedUrl}
-          onSave={handleProfileSave}
-          onAvatarSave={handleAvatarSave}
-          onCancel={() => setProfileEditorOpen(false)}
-        />
-      ) : null}
 
       {/* Top-right toast — auto-dismisses after 1500 ms (rendering-conditional-render). */}
       <Toast message={toast} onDismiss={dismissToast} />
-    </div>
+    </>
   )
 }
