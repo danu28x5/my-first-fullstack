@@ -80,3 +80,34 @@ export type SharePanelRow = {
   created_at: string
   users: { display_name: string | null } | null
 }
+
+// ── Document sharing ─────────────────────────────────────────────────────────
+
+export type DocumentShare = Database['public']['Tables']['document_shares']['Row']
+
+// A document row enriched with the owner's public profile — used in the
+// "Shared with me" section of DocumentList.
+export type SharedDocument = Document & {
+  users: { display_name: string | null; avatar_path: string | null } | null
+}
+
+// The shape returned when querying document_shares with the nested document join:
+//   .select('id, document_id, owner_id, permission, created_at, documents(..., users(display_name, avatar_path))')
+export type SharedDocumentRow = {
+  id: number
+  document_id: number
+  owner_id: string
+  permission: SharePermission
+  created_at: string
+  documents: SharedDocument | null
+}
+
+// The shape returned when querying document_shares for the DocumentSharePanel:
+//   .select('id, shared_with_user_id, permission, created_at, users!document_shares_shared_with_user_id_fkey(display_name)')
+export type DocSharePanelRow = {
+  id: number
+  shared_with_user_id: string
+  permission: SharePermission
+  created_at: string
+  users: { display_name: string | null } | null
+}

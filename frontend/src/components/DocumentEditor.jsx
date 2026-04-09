@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState, useDeferredValue } from 'react'
 import { useNavigate } from 'react-router'
 import { supabase } from '../lib/supabase'
+import DocumentSharePanel from './DocumentSharePanel'
 import MarkdownPreview from './MarkdownPreview'
 import SplitPane from './SplitPane'
 /** @typedef {import('../lib/supabase').Document} Document */
+/** @typedef {import('../lib/supabase').SharePermission} SharePermission */
 
 // Auto-save debounce delay in ms.
 const SAVE_DELAY = 1000
@@ -23,9 +25,12 @@ const SAVE_DELAY = 1000
  *
  * @param {{
  *   document: Document,
+ *   userId: string,
+ *   isOwner: boolean,
+ *   permission: SharePermission | null,
  * }} props
  */
-export default function DocumentEditor({ document: doc }) {
+export default function DocumentEditor({ document: doc, userId, isOwner, permission }) {
   const navigate = useNavigate()
   // Lazy state init — functions run once on mount (rerender-lazy-state-init).
   const [title, setTitle] = useState(() => doc.title)
@@ -33,8 +38,17 @@ export default function DocumentEditor({ document: doc }) {
   const [saveStatus, setSaveStatus] = useState(/** @type {'idle' | 'saving' | 'saved' | 'error'} */ ('idle'))
   const [saveError, setSaveError] = useState(/** @type {string | null} */ (null))
 
-  // On mobile (≤600px) switch between edit and preview tabs.
-  const [mobileTab, setMobileTab] = useState(/** @type {'edit' | 'preview'} */ ('edit'))
+  // Exit animation state — briefly true before navigating away.
+  const [exiting, setExiting] = useState(false)
+
+  // Share panel visibility (owner only).
+  const [sharePanelOpen, setSharePanelOpen] = useState(false)
+  // Toast message (passed to share panel callbacks).
+  const [toast, setToast] = useState(/** @type {string | null} */ (null))
+
+  // Permission-derived flags (rerender-derived-state-no-effect).
+  const canEdit = isOwner || permission === 'edit'
+  const canEditTitle = isOwner
 
   // Deferred body — React prioritises the textarea update and renders the
   // preview when idle (rerender-use-deferred-value).
@@ -49,14 +63,23 @@ export default function DocumentEditor({ document: doc }) {
   // ── Auto-save (debounced) ───────────────────────────────────────────────
 
   useEffect(() => {
+    // View-only users never auto-save.
+    if (!canEdit) return
+
     // Skip save when nothing has changed from the initial load.
     if (title === initialRef.current.title && body === initialRef.current.body) return
 
     const timer = setTimeout(async () => {
       setSaveStatus('saving')
+
+      // Shared editors save body only — title changes are owner-only.
+      const patch = isOwner
+        ? { title: title.trim() || 'Untitled document', body: body || null }
+        : { body: body || null }
+
       const { error } = await supabase
         .from('documents')
-        .update({ title: title.trim() || 'Untitled document', body: body || null })
+        .update(patch)
         .eq('id', doc.id)
 
       if (error) {
@@ -71,7 +94,7 @@ export default function DocumentEditor({ document: doc }) {
     }, SAVE_DELAY)
 
     return () => clearTimeout(timer)
-  }, [title, body, doc.id])
+  }, [title, body, doc.id, canEdit, isOwner])
 
   // ── Keyboard shortcuts (Ctrl/Cmd + B/I) ─────────────────────────────────
 
@@ -122,6 +145,13 @@ export default function DocumentEditor({ document: doc }) {
     }
   }, [body])
 
+  // ── Close with exit animation ───────────────────────────────────────────
+
+  const handleClose = useCallback(() => {
+    setExiting(true)
+    setTimeout(() => navigate('/documents'), 180)
+  }, [navigate])
+
   // ── Save-status label ───────────────────────────────────────────────────
 
   const statusLabel =
@@ -133,13 +163,13 @@ export default function DocumentEditor({ document: doc }) {
   // ── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <div className="doc-editor-fullscreen">
+    <div className={`doc-editor-fullscreen${exiting ? ' doc-editor-fullscreen--exiting' : ''}`}>
       {/* ── Top toolbar ──────────────────────────────────────────────── */}
       <div className="doc-editor-toolbar">
         <button
           type="button"
           className="btn btn-ghost"
-          onClick={() => navigate('/documents')}
+          onClick={handleClose}
         >
           ← Back
         </button>
@@ -151,7 +181,8 @@ export default function DocumentEditor({ document: doc }) {
           onChange={e => setTitle(e.target.value)}
           placeholder="Document title"
           aria-label="Document title"
-          autoFocus
+          readOnly={!canEditTitle}
+          autoFocus={canEditTitle}
         />
 
         <div className="doc-editor-toolbar__right">
@@ -164,47 +195,67 @@ export default function DocumentEditor({ document: doc }) {
             </span>
           ) : null}
 
-          <span className="doc-editor-shortcut-hint" aria-hidden="true">
-            Ctrl+B bold · Ctrl+I italic
-          </span>
+          {canEdit ? (
+            <span className="doc-editor-shortcut-hint" aria-hidden="true">
+              Ctrl+B bold · Ctrl+I italic
+            </span>
+          ) : null}
+
+          {isOwner ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setSharePanelOpen(true)}
+            >
+              Share
+            </button>
+          ) : null}
         </div>
       </div>
 
-      {/* ── Mobile tab switcher (visible ≤600px) ─────────────────────── */}
-      <div className="doc-editor-tabs">
-        <button
-          type="button"
-          className={`doc-editor-tab ${mobileTab === 'edit' ? 'doc-editor-tab--active' : ''}`}
-          onClick={() => setMobileTab('edit')}
-        >
-          Edit
-        </button>
-        <button
-          type="button"
-          className={`doc-editor-tab ${mobileTab === 'preview' ? 'doc-editor-tab--active' : ''}`}
-          onClick={() => setMobileTab('preview')}
-        >
-          Preview
-        </button>
+      {/* ── Body area ────────────────────────────────────────────────── */}
+      <div className="doc-editor-body-area">
+        {canEdit ? (
+          /* Split pane (desktop side-by-side / narrow stacked) */
+          <SplitPane initialLeftPercent={50}>
+            <textarea
+              ref={textareaRef}
+              className="doc-editor-textarea"
+              value={body}
+              onChange={e => setBody(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Write your Markdown here…"
+              spellCheck
+            />
+            <div className="doc-editor-preview-pane" style={{ opacity: isStale ? 0.85 : 1 }}>
+              <MarkdownPreview source={deferredBody} />
+            </div>
+          </SplitPane>
+        ) : (
+          /* View-only: full-width rendered Markdown, no editor pane */
+          <div className="doc-editor-preview-pane" style={{ height: '100%' }}>
+            <MarkdownPreview source={doc.body ?? ''} />
+          </div>
+        )}
       </div>
 
-      {/* ── Split pane (desktop) / tab content (mobile) ──────────────── */}
-      <div className={`doc-editor-body-area ${mobileTab === 'preview' ? 'doc-editor-body-area--preview' : ''}`}>
-        <SplitPane initialLeftPercent={50}>
-          <textarea
-            ref={textareaRef}
-            className="doc-editor-textarea"
-            value={body}
-            onChange={e => setBody(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Write your Markdown here…"
-            spellCheck
-          />
-          <div className="doc-editor-preview-pane" style={{ opacity: isStale ? 0.85 : 1 }}>
-            <MarkdownPreview source={deferredBody} />
-          </div>
-        </SplitPane>
-      </div>
+      {/* ── Share panel (owner only) ─────────────────────────────────── */}
+      {sharePanelOpen ? (
+        <DocumentSharePanel
+          documentId={doc.id}
+          documentTitle={title}
+          userId={userId}
+          onClose={() => setSharePanelOpen(false)}
+          onToast={(msg) => { setToast(msg); setSharePanelOpen(false) }}
+        />
+      ) : null}
+
+      {/* ── Toast ────────────────────────────────────────────────────── */}
+      {toast !== null ? (
+        <div className="toast" role="status" onAnimationEnd={() => setTimeout(() => setToast(null), 1200)}>
+          {toast}
+        </div>
+      ) : null}
     </div>
   )
 }

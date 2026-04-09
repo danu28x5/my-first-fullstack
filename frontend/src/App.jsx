@@ -81,7 +81,7 @@ function App() {
         <Route path="archived" element={<NoteList userId={session.user.id} />} />
         <Route path="shared" element={<NoteList userId={session.user.id} />} />
         <Route path="documents" element={<DocumentList userId={session.user.id} />} />
-        <Route path="documents/:documentId" element={<DocumentEditorRoute />} />
+        <Route path="documents/:documentId" element={<DocumentEditorRoute userId={session.user.id} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
