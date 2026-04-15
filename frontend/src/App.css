@@ -249,6 +249,14 @@
   background: var(--bg-subtle);
 }
 
+/* Lock layout to the viewport when the doc editor is present so the
+   flex chain has a definite height — each pane scrolls independently. */
+.notes-layout:has(.doc-editor-fullscreen) {
+  height: 100svh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .notes-header {
   display: flex;
   align-items: center;
@@ -258,6 +266,7 @@
   border-bottom: 1px solid var(--border);
   gap: 1rem;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .notes-title {
@@ -1664,6 +1673,15 @@
   background: var(--accent);
 }
 
+@keyframes splitPaneFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.split-pane--fade-in {
+  animation: splitPaneFadeIn 0.6s ease;
+}
+
 /* ── Textarea pane ───────────────────────────────────────────────────── */
 
 .doc-editor-textarea {
@@ -1695,6 +1713,118 @@
 .doc-editor-textarea::-webkit-scrollbar-track { background: var(--bg); }
 .doc-editor-textarea::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .doc-editor-textarea::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Textarea wrapper (relative container for cursor overlay) ────────── */
+
+.textarea-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Presence bar (connected-user avatars in toolbar) ────────────────── */
+
+.presence-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.presence-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 0;
+  color: #fff;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 2px solid transparent;
+  box-sizing: border-box;
+  transition: opacity 0.2s, transform 0.2s;
+  animation: presence-in 0.2s ease-out;
+}
+
+.presence-dot--self {
+  width: 30px;
+  height: 30px;
+}
+
+.presence-dot__img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.presence-dot:hover {
+  /* no hover effect */
+}
+
+@keyframes presence-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* ── Cursor overlay (remote cursor line highlights) ──────────────────── */
+
+.cursor-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.cursor-overlay__line {
+  position: absolute;
+  left: 0;
+  right: 6px;
+  border-radius: 2px;
+  border-left: 3px solid var(--cursor-dot);
+  transition: top 0.1s ease-out, opacity 0.15s;
+}
+
+/* 8-color palette — light-theme highlights (soft washes) */
+.cursor-overlay__line[data-palette="0"] { background: rgba(224,108,117,0.10); --cursor-dot: #e06c75; }
+.cursor-overlay__line[data-palette="1"] { background: rgba(209,154,102,0.10); --cursor-dot: #d19a66; }
+.cursor-overlay__line[data-palette="2"] { background: rgba(229,192,123,0.10); --cursor-dot: #e5c07b; }
+.cursor-overlay__line[data-palette="3"] { background: rgba(152,195,121,0.10); --cursor-dot: #98c379; }
+.cursor-overlay__line[data-palette="4"] { background: rgba(86,182,194, 0.10); --cursor-dot: #56b6c2; }
+.cursor-overlay__line[data-palette="5"] { background: rgba(97,175,239, 0.10); --cursor-dot: #61afef; }
+.cursor-overlay__line[data-palette="6"] { background: rgba(198,120,221,0.10); --cursor-dot: #c678dd; }
+.cursor-overlay__line[data-palette="7"] { background: rgba(190,80,70,  0.10); --cursor-dot: #be5046; }
+
+/* 8-color palette — dark-theme highlights (slightly more visible tints) */
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="0"] { background: rgba(224,108,117,0.15); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="1"] { background: rgba(209,154,102,0.15); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="2"] { background: rgba(229,192,123,0.12); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="3"] { background: rgba(152,195,121,0.15); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="4"] { background: rgba(86,182,194, 0.15); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="5"] { background: rgba(97,175,239, 0.15); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="6"] { background: rgba(198,120,221,0.15); }
+:root[data-theme="dark"] .cursor-overlay__line[data-palette="7"] { background: rgba(190,80,70,  0.15); }
+
+.cursor-overlay__label {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  font-size: 0.55rem;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px 3px 3px 0;
+  color: #fff;
+  white-space: nowrap;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 1;
+  transform: translateY(-100%);
+}
 
 /* ── Preview pane ────────────────────────────────────────────────────── */
 
@@ -1905,16 +2035,6 @@
    ============================================================ */
 
 @media (max-width: 767px) {
-  /* .notes-layout uses min-height: 100svh (indefinite main size).  In an
-     indefinite flex column, flex: 1 on children resolves to content size —
-     the 1700 px preview wins and the textarea collapses.  Giving the layout
-     a definite height (only when the doc editor is present) lets the entire
-     flex chain resolve properly.  :has() is baselined since Dec 2023. */
-  .notes-layout:has(.doc-editor-fullscreen) {
-    height: 100svh;
-    overflow: hidden;
-  }
-
   .doc-editor-shortcut-hint {
     display: none;
   }
@@ -1945,7 +2065,10 @@
   }
 
   .doc-editor-body-area .split-pane__divider {
-    display: none;
+    width: 100%;
+    height: 5px;
+    cursor: row-resize;
+    margin-left: 0;
   }
 
   /* Each panel occupies equal height via flex: 1 in the column split-pane.
@@ -1953,6 +2076,7 @@
      rather than height: 100% (which can't resolve against a flex-item panel). */
   .doc-editor-body-area .split-pane__panel {
     width: 100% !important;
+    height: 50%;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -1963,6 +2087,20 @@
      which no longer resolves now that the panel is a flex container. */
   .doc-editor-body-area .doc-editor-textarea,
   .doc-editor-body-area .doc-editor-preview-pane {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+
+  /* Textarea wrapper must also fill the flex panel on mobile */
+  .doc-editor-body-area .textarea-wrapper {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .doc-editor-body-area .textarea-wrapper .doc-editor-textarea {
     flex: 1;
     height: auto;
     min-height: 0;

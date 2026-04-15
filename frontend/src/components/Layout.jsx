@@ -125,7 +125,7 @@ export default function Layout({ userId, userEmail, theme, onToggleTheme, onSign
         </div>
       </header>
 
-      <Outlet />
+      <Outlet context={{ displayName, userEmail, avatarSignedUrl }} />
 
       {profileEditorOpen ? (
         <ProfileEditor

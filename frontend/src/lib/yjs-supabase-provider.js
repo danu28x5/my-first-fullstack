@@ -1,6 +1,36 @@
 import * as Y from 'yjs'
 import { toBase64, fromBase64 } from './base64'
 
+// ── Deterministic user color ──────────────────────────────────────────────
+// Curated palette of 8 colors that look good against both light and dark
+// backgrounds.  `dot` is the solid accent used for avatar borders and cursor
+// labels.  Highlight colours are set per-theme in CSS via data-palette
+// attributes, so only `dot` and `paletteIndex` are needed here.
+
+const PALETTE = [
+  '#e06c75', // rose
+  '#d19a66', // amber
+  '#e5c07b', // gold
+  '#98c379', // green
+  '#56b6c2', // teal
+  '#61afef', // blue
+  '#c678dd', // purple
+  '#be5046', // rust
+]
+
+/**
+ * @param {string} userId
+ * @returns {{ dot: string, paletteIndex: number }}
+ */
+export function userColor(userId) {
+  let hash = 5381
+  for (let i = 0; i < userId.length; i++) {
+    hash = ((hash << 5) + hash + userId.charCodeAt(i)) | 0
+  }
+  const idx = ((hash % PALETTE.length) + PALETTE.length) % PALETTE.length
+  return { dot: PALETTE[idx], paletteIndex: idx }
+}
+
 /**
  * Custom Yjs provider that syncs a Y.Doc via Supabase Realtime Broadcast.
  *
@@ -19,6 +49,13 @@ import { toBase64, fromBase64 } from './base64'
  * Ongoing edits are broadcast as `yjs-update` messages.  Remote updates are
  * applied with origin `'remote'` so the ydoc update handler can skip echoing
  * them back.
+ *
+ * ## Awareness protocol
+ *
+ * Ephemeral presence state (user name, color, cursor position) is broadcast
+ * over the same channel using `awareness-update` and `awareness-leave` events.
+ * A 15-second stale-peer timeout removes clients that disconnect without
+ * sending a leave message.
  */
 export class SupabaseBroadcastProvider {
   /**
@@ -27,9 +64,12 @@ export class SupabaseBroadcastProvider {
    *   ydoc: Y.Doc,
    *   documentId: number | string,
    *   canEdit: boolean,
+   *   userId: string,
+   *   displayName: string,
+   *   avatarUrl?: string | null,
    * }} opts
    */
-  constructor({ supabaseClient, ydoc, documentId, canEdit }) {
+  constructor({ supabaseClient, ydoc, documentId, canEdit, userId, displayName, avatarUrl }) {
     this.ydoc = ydoc
     this.supabaseClient = supabaseClient
     this.canEdit = canEdit
@@ -40,6 +80,22 @@ export class SupabaseBroadcastProvider {
     /** @type {ReturnType<typeof setTimeout> | null} */
     this._syncTimeout = null
     this._retryCount = 0
+
+    // ── Awareness state ───────────────────────────────────────────────
+    this.userId = userId
+    this.displayName = displayName
+    this.avatarUrl = avatarUrl ?? null
+    this.color = userColor(userId)
+
+    /** @type {Map<string, { userId: string, displayName: string, color: { dot: string, paletteIndex: number }, cursorPos: number, avatarUrl: string | null, lastSeen: number }>} */
+    this.peers = new Map()
+
+    /** Callback set by the component to react to awareness changes. */
+    /** @type {(() => void) | null} */
+    this._onAwarenessChange = null
+
+    /** Timestamp of the last outgoing cursor broadcast (throttle to 200ms). */
+    this._lastCursorBroadcast = 0
 
     // ── Create the Broadcast channel ──────────────────────────────────
     this.channel = supabaseClient.channel(this._channelName)
@@ -69,6 +125,30 @@ export class SupabaseBroadcastProvider {
       }
       this.ydoc.on('update', this._updateHandler)
     }
+
+    // ── Stale-peer cleanup (every 5 s, evict peers older than 15 s) ───
+    this._awarenessCleanupInterval = setInterval(() => {
+      const now = Date.now()
+      let changed = false
+      for (const [key, peer] of this.peers) {
+        if (now - peer.lastSeen > 120_000) {
+          this.peers.delete(key)
+          changed = true
+        }
+      }
+      if (changed) this._onAwarenessChange?.()
+    }, 5000)
+
+    // ── Send awareness-leave on page unload ───────────────────────────
+    this._beforeUnloadHandler = () => {
+      if (this._destroyed) return
+      this.channel.send({
+        type: 'broadcast',
+        event: 'awareness-leave',
+        payload: { userId: this.userId },
+      })
+    }
+    window.addEventListener('beforeunload', this._beforeUnloadHandler)
   }
 
   /** @private Subscribe to the channel with retry on transient errors. */
@@ -84,6 +164,19 @@ export class SupabaseBroadcastProvider {
           type: 'broadcast',
           event: 'sync-request',
           payload: { stateVector: toBase64(sv) },
+        })
+
+        // Announce our presence to existing clients.
+        this.channel.send({
+          type: 'broadcast',
+          event: 'awareness-update',
+          payload: {
+            userId: this.userId,
+            displayName: this.displayName,
+            color: this.color,
+            cursorPos: 0,
+            avatarUrl: this.avatarUrl,
+          },
         })
 
         // If nobody responds within 2 s we're the only client — the
@@ -148,11 +241,71 @@ export class SupabaseBroadcastProvider {
         }
       } catch { /* ignore malformed messages */ }
     })
+
+    // ── Awareness listeners ───────────────────────────────────────────
+    this.channel.on('broadcast', { event: 'awareness-update' }, (msg) => {
+      if (this._destroyed) return
+      try {
+        const { userId, displayName, color, cursorPos, avatarUrl } = msg.payload
+        if (userId === this.userId) return // skip self
+        this.peers.set(userId, { userId, displayName, color, cursorPos, avatarUrl: avatarUrl ?? null, lastSeen: Date.now() })
+        this._onAwarenessChange?.()
+      } catch { /* ignore malformed messages */ }
+    })
+
+    this.channel.on('broadcast', { event: 'awareness-leave' }, (msg) => {
+      if (this._destroyed) return
+      try {
+        const { userId } = msg.payload
+        if (userId === this.userId) return
+        if (this.peers.delete(userId)) {
+          this._onAwarenessChange?.()
+        }
+      } catch { /* ignore malformed messages */ }
+    })
+  }
+
+  /**
+   * Broadcast the local user's cursor position to peers.
+   * Throttled to at most once per 200 ms to avoid flooding the channel.
+   * @param {number} cursorPos — character offset in the body text
+   */
+  broadcastCursor(cursorPos) {
+    if (this._destroyed) return
+    const now = Date.now()
+    if (now - this._lastCursorBroadcast < 200) return
+    this._lastCursorBroadcast = now
+    this.channel.send({
+      type: 'broadcast',
+      event: 'awareness-update',
+      payload: {
+        userId: this.userId,
+        displayName: this.displayName,
+        color: this.color,
+        cursorPos,
+        avatarUrl: this.avatarUrl,
+      },
+    })
   }
 
   /** Clean up: unregister ydoc listener and remove the Broadcast channel. */
   destroy() {
     this._destroyed = true
+
+    // ── Awareness cleanup ─────────────────────────────────────────────
+    clearInterval(this._awarenessCleanupInterval)
+    window.removeEventListener('beforeunload', this._beforeUnloadHandler)
+    this.peers.clear()
+
+    // Notify peers we're leaving (best-effort — channel may already be gone).
+    try {
+      this.channel.send({
+        type: 'broadcast',
+        event: 'awareness-leave',
+        payload: { userId: this.userId },
+      })
+    } catch { /* ignore if channel is already closed */ }
+
     if (this._syncTimeout) {
       clearTimeout(this._syncTimeout)
       this._syncTimeout = null

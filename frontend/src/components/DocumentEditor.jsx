@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router'
 import * as Y from 'yjs'
 import { supabase } from '../lib/supabase'
 import { toBase64, fromBase64 } from '../lib/base64'
-import { SupabaseBroadcastProvider } from '../lib/yjs-supabase-provider'
+import { SupabaseBroadcastProvider, userColor } from '../lib/yjs-supabase-provider'
 import { useYjsTextarea } from '../lib/use-yjs-textarea'
 import DocumentSharePanel from './DocumentSharePanel'
 import MarkdownPreview from './MarkdownPreview'
+import PresenceBar from './PresenceBar'
+import CursorOverlay from './CursorOverlay'
 import SplitPane from './SplitPane'
 /** @typedef {import('../lib/supabase').Document} Document */
 /** @typedef {import('../lib/supabase').SharePermission} SharePermission */
@@ -38,9 +40,12 @@ const SAVE_DELAY = 5000
  *   userId: string,
  *   isOwner: boolean,
  *   permission: SharePermission | null,
+ *   displayName: string | null,
+ *   userEmail: string | undefined,
+ *   avatarUrl: string | null | undefined,
  * }} props
  */
-export default function DocumentEditor({ document: doc, userId, isOwner, permission }) {
+export default function DocumentEditor({ document: doc, userId, isOwner, permission, displayName, userEmail, avatarUrl }) {
   const navigate = useNavigate()
   const [saveStatus, setSaveStatus] = useState(/** @type {'idle' | 'saving' | 'saved' | 'error'} */ ('idle'))
   const [saveError, setSaveError] = useState(/** @type {string | null} */ (null))
@@ -89,6 +94,17 @@ export default function DocumentEditor({ document: doc, userId, isOwner, permiss
   // static body from the DB and skip Yjs entirely.
   const providerRef = useRef(/** @type {SupabaseBroadcastProvider | null} */ (null))
 
+  // ── Awareness / presence state ──────────────────────────────────────────
+  // Raw peer map lives in a ref to avoid re-render storms from high-frequency
+  // awareness updates.  We flush to React state on the next animation frame
+  // (rerender-use-ref-transient-values).
+  const peersRef = useRef(/** @type {Array<{ userId: string, displayName: string, color: { dot: string, paletteIndex: number }, cursorPos: number, avatarUrl: string | null }>} */ ([]))
+  const [peers, setPeers] = useState(/** @type {typeof peersRef.current} */ ([]))
+  const rafIdRef = useRef(/** @type {number | null} */ (null))
+
+  const selfLabel = displayName || userEmail || 'You'
+  const selfColor = userColor(userId)
+
   useEffect(() => {
     if (!canEdit) return
 
@@ -97,14 +113,42 @@ export default function DocumentEditor({ document: doc, userId, isOwner, permiss
       ydoc,
       documentId: doc.id,
       canEdit,
+      userId,
+      displayName: selfLabel,
+      avatarUrl,
     })
     providerRef.current = provider
+
+    // Flush awareness changes to React state at most once per frame.
+    provider._onAwarenessChange = () => {
+      peersRef.current = Array.from(provider.peers.values())
+      if (rafIdRef.current === null) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null
+          setPeers(peersRef.current)
+        })
+      }
+    }
 
     return () => {
       provider.destroy()
       providerRef.current = null
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      setPeers([])
     }
-  }, [ydoc, doc.id, canEdit])
+  }, [ydoc, doc.id, canEdit, userId, selfLabel, avatarUrl])
+
+  // ── Broadcast local cursor position on selection / click / keyup ────────
+  const handleCursorMove = useCallback(() => {
+    const ta = textareaRef.current
+    const provider = providerRef.current
+    if (ta && provider) {
+      provider.broadcastCursor(ta.selectionStart ?? 0)
+    }
+  }, [textareaRef])
 
   // ── Dirty tracking for auto-save ────────────────────────────────────────
   // A simple ref flag: set to true by Y.Text observers (local + remote
@@ -291,18 +335,16 @@ export default function DocumentEditor({ document: doc, userId, isOwner, permiss
         />
 
         <div className="doc-editor-toolbar__right">
+          {canEdit && peers.length > 0 ? (
+            <PresenceBar peers={peers} selfColor={selfColor.dot} selfLabel={selfLabel} selfAvatarUrl={avatarUrl} />
+          ) : null}
+
           {statusLabel !== null ? (
             <span
               className={`save-status ${saveStatus === 'saving' ? 'save-status--saving' : ''} ${saveStatus === 'error' ? 'save-status--error' : ''}`}
               role="status"
             >
               {statusLabel}
-            </span>
-          ) : null}
-
-          {canEdit ? (
-            <span className="doc-editor-shortcut-hint" aria-hidden="true">
-              Ctrl+B bold · Ctrl+I italic
             </span>
           ) : null}
 
@@ -323,15 +365,25 @@ export default function DocumentEditor({ document: doc, userId, isOwner, permiss
         {canEdit ? (
           /* Split pane (desktop side-by-side / narrow stacked) */
           <SplitPane initialLeftPercent={50}>
-            <textarea
-              ref={textareaRef}
-              className="doc-editor-textarea"
-              value={body}
-              onChange={onBodyChange}
-              onKeyDown={handleKeyDown}
-              placeholder="Write your Markdown here…"
-              spellCheck
-            />
+            <div className="textarea-wrapper">
+              <textarea
+                ref={textareaRef}
+                className="doc-editor-textarea"
+                value={body}
+                onChange={onBodyChange}
+                onKeyDown={handleKeyDown}
+                onSelect={handleCursorMove}
+                onClick={handleCursorMove}
+                onKeyUp={handleCursorMove}
+                placeholder="Write your Markdown here…"
+                spellCheck
+              />
+              <CursorOverlay
+                textareaRef={textareaRef}
+                text={body}
+                remoteCursors={peers}
+              />
+            </div>
             <div className="doc-editor-preview-pane" style={{ opacity: isStale ? 0.85 : 1 }}>
               <MarkdownPreview source={deferredBody} />
             </div>

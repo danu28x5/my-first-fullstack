@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link, useNavigate } from 'react-router'
+import { useParams, Link, useNavigate, useOutletContext } from 'react-router'
 import { supabase } from '../lib/supabase'
 import DocumentEditor from './DocumentEditor'
 /** @typedef {import('../lib/supabase').Document} Document */
@@ -17,6 +17,7 @@ import DocumentEditor from './DocumentEditor'
 export default function DocumentEditorRoute({ userId }) {
   const { documentId } = useParams()
   const navigate = useNavigate()
+  const { displayName, userEmail, avatarSignedUrl } = useOutletContext()
   const [doc, setDoc] = useState(/** @type {Document | null} */ (null))
   const [permission, setPermission] = useState(/** @type {SharePermission | null} */ (null))
   const [loading, setLoading] = useState(true)
@@ -103,6 +104,9 @@ export default function DocumentEditorRoute({ userId }) {
       userId={userId}
       isOwner={isOwner}
       permission={permission}
+      displayName={displayName}
+      userEmail={userEmail}
+      avatarUrl={avatarSignedUrl}
     />
   )
 }
