@@ -96,6 +96,8 @@ export class SupabaseBroadcastProvider {
 
     /** Timestamp of the last outgoing cursor broadcast (throttle to 200ms). */
     this._lastCursorBroadcast = 0
+    /** Last known cursor position (for re-announcements). */
+    this._cursorPos = 0
 
     // ── Create the Broadcast channel ──────────────────────────────────
     this.channel = supabaseClient.channel(this._channelName)
@@ -148,7 +150,7 @@ export class SupabaseBroadcastProvider {
       this.channel.send({
         type: 'broadcast',
         event: 'awareness-leave',
-        payload: { userId: this.userId },
+        payload: { userId: this.userId, sentAt: Date.now() },
       })
     }
     window.addEventListener('beforeunload', this._beforeUnloadHandler)
@@ -177,8 +179,9 @@ export class SupabaseBroadcastProvider {
             userId: this.userId,
             displayName: this.displayName,
             color: this.color,
-            cursorPos: 0,
+            cursorPos: this._cursorPos,
             avatarUrl: this.avatarUrl,
+            sentAt: Date.now(),
           },
         })
 
@@ -245,6 +248,20 @@ export class SupabaseBroadcastProvider {
           event: 'sync-response',
           payload: { data: toBase64(diff) },
         })
+        // Re-announce our presence so the joining client immediately
+        // learns about us (they have no other way to discover existing peers).
+        this.channel.send({
+          type: 'broadcast',
+          event: 'awareness-update',
+          payload: {
+            userId: this.userId,
+            displayName: this.displayName,
+            color: this.color,
+            cursorPos: this._cursorPos,
+            avatarUrl: this.avatarUrl,
+            sentAt: Date.now(),
+          },
+        })
       } catch { /* ignore malformed messages */ }
     })
 
@@ -284,10 +301,10 @@ export class SupabaseBroadcastProvider {
     this.channel.on('broadcast', { event: 'awareness-update' }, (msg) => {
       if (this._destroyed) return
       try {
-        const { userId, displayName, color, cursorPos, avatarUrl } = msg.payload
+        const { userId, displayName, color, cursorPos, avatarUrl, sentAt } = msg.payload
         if (userId === this.userId) return // skip self
         const resolvedColor = this._resolveColor(color, userId)
-        this.peers.set(userId, { userId, displayName, color: resolvedColor, cursorPos, avatarUrl: avatarUrl ?? null, lastSeen: Date.now() })
+        this.peers.set(userId, { userId, displayName, color: resolvedColor, cursorPos, avatarUrl: avatarUrl ?? null, lastSeen: Date.now(), sentAt: sentAt ?? Date.now() })
         this._onAwarenessChange?.()
       } catch { /* ignore malformed messages */ }
     })
@@ -295,8 +312,13 @@ export class SupabaseBroadcastProvider {
     this.channel.on('broadcast', { event: 'awareness-leave' }, (msg) => {
       if (this._destroyed) return
       try {
-        const { userId } = msg.payload
+        const { userId, sentAt } = msg.payload
         if (userId === this.userId) return
+        // Ignore stale leave messages — if we received a newer
+        // awareness-update from this user (e.g. after a quick rejoin),
+        // the leave is from the old session and should be discarded.
+        const existing = this.peers.get(userId)
+        if (existing && sentAt && existing.sentAt > sentAt) return
         if (this.peers.delete(userId)) {
           this._onAwarenessChange?.()
         }
@@ -311,6 +333,7 @@ export class SupabaseBroadcastProvider {
    */
   broadcastCursor(cursorPos) {
     if (this._destroyed) return
+    this._cursorPos = cursorPos
     const now = Date.now()
     if (now - this._lastCursorBroadcast < 200) return
     this._lastCursorBroadcast = now
@@ -323,6 +346,7 @@ export class SupabaseBroadcastProvider {
         color: this.color,
         cursorPos,
         avatarUrl: this.avatarUrl,
+        sentAt: now,
       },
     })
   }
@@ -370,7 +394,7 @@ export class SupabaseBroadcastProvider {
       this.channel.send({
         type: 'broadcast',
         event: 'awareness-leave',
-        payload: { userId: this.userId },
+        payload: { userId: this.userId, sentAt: Date.now() },
       })
     } catch { /* ignore if channel is already closed */ }
 
