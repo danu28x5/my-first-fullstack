@@ -103,6 +103,9 @@ export class SupabaseBroadcastProvider {
     /** @type {ReturnType<typeof setTimeout> | null} */
     this._retryTimer = null
 
+    /** @type {ReturnType<typeof setInterval> | null} */
+    this._heartbeatInterval = null
+
     // Register broadcast listeners and subscribe with sync handshake.
     this._registerListeners()
     this._subscribe()
@@ -179,18 +182,34 @@ export class SupabaseBroadcastProvider {
           },
         })
 
-        // If nobody responds within 2 s we're the only client — the
-        // caller already loaded DB state so we're good.
+        // If nobody responds within 4 s we're the only client — the
+        // caller already loaded DB state so we're good.  (4 s accommodates
+        // higher production latency vs localhost.)
         this._syncTimeout = setTimeout(() => {
           this.synced = true
           this._syncTimeout = null
-        }, 2000)
+        }, 4000)
+
+        // ── Periodic re-sync heartbeat ────────────────────────────────
+        // Every 10 s, broadcast our state vector.  Peers that are ahead
+        // reply with the diff — this catches any silently dropped
+        // yjs-update messages mid-session.
+        if (this._heartbeatInterval) clearInterval(this._heartbeatInterval)
+        this._heartbeatInterval = setInterval(() => {
+          if (this._destroyed) return
+          const sv = Y.encodeStateVector(this.ydoc)
+          this.channel.send({
+            type: 'broadcast',
+            event: 'sync-heartbeat',
+            payload: { stateVector: toBase64(sv) },
+          })
+        }, 10_000)
       } else if (
         (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') &&
-        this._retryCount < 3
+        this._retryCount < 10
       ) {
         this._retryCount++
-        const delay = 1000 * this._retryCount
+        const delay = Math.min(1000 * 2 ** this._retryCount, 30_000)
         this._retryTimer = setTimeout(() => {
           if (this._destroyed) return
           // Remove old channel by reference (see destroy() for rationale).
@@ -242,13 +261,33 @@ export class SupabaseBroadcastProvider {
       } catch { /* ignore malformed messages */ }
     })
 
+    // ── Heartbeat listener (periodic re-sync) ─────────────────────────
+    // When a peer broadcasts its state vector, diff against our local doc.
+    // If they're behind, send them the missing updates.
+    this.channel.on('broadcast', { event: 'sync-heartbeat' }, (msg) => {
+      if (this._destroyed) return
+      try {
+        const remoteVector = fromBase64(msg.payload.stateVector)
+        const diff = Y.encodeStateAsUpdate(this.ydoc, remoteVector)
+        // Only send if there's actually data to send (non-empty diff).
+        if (diff.byteLength > 2) {
+          this.channel.send({
+            type: 'broadcast',
+            event: 'sync-response',
+            payload: { data: toBase64(diff) },
+          })
+        }
+      } catch { /* ignore malformed messages */ }
+    })
+
     // ── Awareness listeners ───────────────────────────────────────────
     this.channel.on('broadcast', { event: 'awareness-update' }, (msg) => {
       if (this._destroyed) return
       try {
         const { userId, displayName, color, cursorPos, avatarUrl } = msg.payload
         if (userId === this.userId) return // skip self
-        this.peers.set(userId, { userId, displayName, color, cursorPos, avatarUrl: avatarUrl ?? null, lastSeen: Date.now() })
+        const resolvedColor = this._resolveColor(color, userId)
+        this.peers.set(userId, { userId, displayName, color: resolvedColor, cursorPos, avatarUrl: avatarUrl ?? null, lastSeen: Date.now() })
         this._onAwarenessChange?.()
       } catch { /* ignore malformed messages */ }
     })
@@ -288,12 +327,41 @@ export class SupabaseBroadcastProvider {
     })
   }
 
+  /**
+   * Resolve color collisions within the current session.
+   * If the incoming peer's paletteIndex collides with our own or any
+   * existing peer, shift to the nearest free slot (0–7).
+   * @param {{ dot: string, paletteIndex: number }} color
+   * @param {string} peerId
+   * @returns {{ dot: string, paletteIndex: number }}
+   */
+  _resolveColor(color, peerId) {
+    const taken = new Set([this.color.paletteIndex])
+    for (const [id, peer] of this.peers) {
+      if (id !== peerId) taken.add(peer.color.paletteIndex)
+    }
+    if (!taken.has(color.paletteIndex)) return color
+    // Find the nearest free slot.
+    for (let offset = 1; offset < PALETTE.length; offset++) {
+      const candidate = (color.paletteIndex + offset) % PALETTE.length
+      if (!taken.has(candidate)) {
+        return { dot: PALETTE[candidate], paletteIndex: candidate }
+      }
+    }
+    // All 8 slots taken — fall back to original (rare: 9+ users).
+    return color
+  }
+
   /** Clean up: unregister ydoc listener and remove the Broadcast channel. */
   destroy() {
     this._destroyed = true
 
     // ── Awareness cleanup ─────────────────────────────────────────────
     clearInterval(this._awarenessCleanupInterval)
+    if (this._heartbeatInterval) {
+      clearInterval(this._heartbeatInterval)
+      this._heartbeatInterval = null
+    }
     window.removeEventListener('beforeunload', this._beforeUnloadHandler)
     this.peers.clear()
 

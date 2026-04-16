@@ -17,7 +17,7 @@ import SplitPane from './SplitPane'
 // Broadcast handles real-time sync between editors; the DB save is a periodic
 // durability snapshot — 5 s keeps WAL churn low while REPLICA IDENTITY FULL
 // writes all columns (including yjs_state) on every UPDATE.
-const SAVE_DELAY = 5000
+const SAVE_DELAY = 3000
 
 /**
  * Full-screen split-pane Markdown editor with live GFM preview, real-time
